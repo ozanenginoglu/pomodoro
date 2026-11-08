@@ -22,6 +22,9 @@ pub use windows::*;
 /// xmonad/picom/Hyprland kuralları bu ada bakar.
 pub const APP_ID: &str = "pomodoro";
 pub const SETTINGS_APP_ID: &str = "pomodoro-settings";
+/// Ayarlar panelinin köşe yarıçapı (mantıksal piksel). Windows'ta pencere
+/// bölgesi de buna göre kırpılır.
+pub const SETTINGS_RADIUS: f32 = 16.0;
 
 /// Bir görünüm ayarı değişikliğinin nasıl uygulandığı.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

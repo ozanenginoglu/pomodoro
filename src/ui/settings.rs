@@ -301,7 +301,7 @@ impl Render for SettingsPanel {
             .child(
                 div()
                     .size_full()
-                    .rounded(px(16.0))
+                    .rounded(px(platform::SETTINGS_RADIUS))
                     .border_1()
                     .border_color(border)
                     .bg(theme::surface())

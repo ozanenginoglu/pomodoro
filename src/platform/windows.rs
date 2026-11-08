@@ -14,14 +14,16 @@ use gpui::{
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows::Win32::{
     Foundation::{HWND, POINT, RECT},
-    Graphics::Gdi::{ClientToScreen, CreateEllipticRgn, SetWindowRgn},
+    Graphics::Gdi::{ClientToScreen, CreateEllipticRgn, CreateRoundRectRgn, SetWindowRgn},
     UI::WindowsAndMessaging::{
         GetClientRect, GetWindowRect, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOSIZE,
         SetWindowPos,
     },
 };
 
-use super::{Applied, settings_window_options, widget_bounds, widget_window_options};
+use super::{
+    Applied, SETTINGS_RADIUS, settings_window_options, widget_bounds, widget_window_options,
+};
 use crate::config::AppearanceConfig;
 
 pub fn open_widget<V: 'static + Render>(
@@ -53,7 +55,33 @@ pub fn open_settings<V: 'static + Render>(
         kind: WindowKind::PopUp,
         ..settings_window_options(WindowBounds::Windowed(bounds))
     };
-    cx.open_window(options, build)
+    let handle = cx.open_window(options, build)?;
+    handle.update(cx, |_, window, _| clip_to_panel(window))?;
+    Ok(handle)
+}
+
+/// Ayarlar penceresini panelin yuvarlak köşeli dikdörtgenine kırpar. Böylece
+/// Windows 11'in kendi kenarlığı, gölgesi ve görünmez boyutlandırma
+/// kenarlıkları görünmez; köşelerin dışı transparan kalır.
+fn clip_to_panel(window: &Window) {
+    let Some(hwnd) = hwnd(window) else { return };
+    let Some((offset, client)) = client_area(hwnd) else { return };
+    let (width, height) = (client.right - client.left, client.bottom - client.top);
+    // Kenar yumuşatması kırpılmasın diye köşe yarıçapı bir piksel büyük.
+    let diameter = ((SETTINGS_RADIUS * window.scale_factor()).round() as i32 + 1) * 2;
+    unsafe {
+        let region = CreateRoundRectRgn(
+            offset.x,
+            offset.y,
+            offset.x + width + 1,
+            offset.y + height + 1,
+            diameter,
+            diameter,
+        );
+        if SetWindowRgn(hwnd, Some(region), true) == 0 {
+            log::warn!("ayarlar penceresi bölgesi uygulanamadı");
+        }
+    }
 }
 
 fn hwnd(window: &Window) -> Option<HWND> {
