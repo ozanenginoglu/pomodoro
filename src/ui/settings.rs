@@ -11,6 +11,7 @@ use gpui::{
 };
 
 use super::theme;
+use crate::i18n::{Language, t};
 use crate::{
     assets::icon,
     config::{Config, Display, Position, Size, limits},
@@ -22,7 +23,7 @@ actions!(settings, [CloseSettings]);
 const CONTEXT: &str = "Settings";
 const WIDTH: f32 = 320.0;
 /// Windows'ta fazladan "Oturum açılınca başlat" satırı var.
-const HEIGHT: f32 = if cfg!(windows) { 658.0 } else { 624.0 };
+const HEIGHT: f32 = if cfg!(windows) { 692.0 } else { 658.0 };
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("escape", CloseSettings, Some(CONTEXT))]);
@@ -77,6 +78,8 @@ impl SettingsPanel {
             change(&mut next);
             let next = next.normalized();
             if next != *config {
+                // Dil değiştiyse panel de aynı karede yeni dille çizilsin.
+                crate::i18n::set(next.language);
                 *config = next;
                 config.save();
                 cx.notify();
@@ -109,8 +112,9 @@ impl SettingsPanel {
                 })
                 .child(text)
         };
-        // Uzun süreler için büyük adım: 60 dakikanın üstünde 5'er dakika.
-        let step = if unit == "dk" && value >= 60 { 5 } else { 1 };
+        // Uzun süreler için büyük adım: 60 dakikanın üstünde 5'er dakika
+        // (tur sayısı en fazla 12 olduğu için yalnızca süreleri etkiler).
+        let step = if value >= 60 { 5 } else { 1 };
         row(label).child(
             div()
                 .flex()
@@ -119,7 +123,7 @@ impl SettingsPanel {
                 .child(button(0, "−", value > min, -step))
                 .child(
                     div()
-                        .w(px(58.0))
+                        .w(px(64.0))
                         .flex()
                         .justify_center()
                         .text_color(theme::text())
@@ -151,7 +155,7 @@ impl SettingsPanel {
         let on = platform::autostart()?;
         Some(switch(
             "autostart",
-            "Oturum açılınca başlat",
+            t().start_on_sign_in,
             on,
             cx.listener(move |_, _, _, cx| {
                 if let Err(e) = platform::set_autostart(!on) {
@@ -319,34 +323,34 @@ impl Render for SettingsPanel {
                                 div()
                                     .text_size(px(16.0))
                                     .text_color(theme::text())
-                                    .child("Ayarlar"),
+                                    .child(t().settings),
                             )
                             .child(close_button(cx)),
                     )
-                    .child(section("POMODORO"))
+                    .child(section(t().section_pomodoro))
                     .child(self.stepper(
-                        stepper("work", "Çalışma", "dk", limits::WORK, |c| {
+                        stepper("work", t().work, t().unit_minutes, limits::WORK, |c| {
                             &mut c.pomodoro.work_minutes
                         }),
                         p.work_minutes,
                         cx,
                     ))
                     .child(self.stepper(
-                        stepper("short", "Kısa mola", "dk", limits::BREAK, |c| {
+                        stepper("short", t().short_break, t().unit_minutes, limits::BREAK, |c| {
                             &mut c.pomodoro.short_break_minutes
                         }),
                         p.short_break_minutes,
                         cx,
                     ))
                     .child(self.stepper(
-                        stepper("long", "Uzun mola", "dk", limits::BREAK, |c| {
+                        stepper("long", t().long_break, t().unit_minutes, limits::BREAK, |c| {
                             &mut c.pomodoro.long_break_minutes
                         }),
                         p.long_break_minutes,
                         cx,
                     ))
                     .child(self.stepper(
-                        stepper("rounds", "Uzun mola aralığı", "tur", limits::ROUNDS, |c| {
+                        stepper("rounds", t().rounds_before_long_break, t().unit_rounds, limits::ROUNDS, |c| {
                             &mut c.pomodoro.rounds_before_long_break
                         }),
                         p.rounds_before_long_break,
@@ -354,58 +358,58 @@ impl Render for SettingsPanel {
                     ))
                     .child(self.toggle(
                         "auto-break",
-                        "Molayı kendiliğinden başlat",
+                        t().auto_start_breaks,
                         p.auto_start_breaks,
                         |c| &mut c.pomodoro.auto_start_breaks,
                         cx,
                     ))
                     .child(self.toggle(
                         "auto-work",
-                        "Çalışmayı kendiliğinden başlat",
+                        t().auto_start_work,
                         p.auto_start_work,
                         |c| &mut c.pomodoro.auto_start_work,
                         cx,
                     ))
-                    .child(section("TOPLANTI"))
+                    .child(section(t().section_meeting))
                     .child(self.segmented(
                         "display",
-                        "Gösterim",
+                        t().display,
                         &[
-                            (Display::Remaining, Text("Kalan")),
-                            (Display::EndTime, Text("Bitiş")),
-                            (Display::Both, Text("İkisi")),
+                            (Display::Remaining, Text(t().display_remaining)),
+                            (Display::EndTime, Text(t().display_end_time)),
+                            (Display::Both, Text(t().display_both)),
                         ],
                         m.display,
                         |c, v| c.meeting.display = v,
                         cx,
                     ))
                     .child(self.stepper(
-                        stepper("warn", "Uyarı", "dk", limits::WARNING, |c| {
+                        stepper("warn", t().warning, t().unit_minutes, limits::WARNING, |c| {
                             &mut c.meeting.warning_minutes
                         }),
                         m.warning_minutes,
                         cx,
                     ))
                     .child(self.stepper(
-                        stepper("crit", "Son uyarı", "dk", limits::CRITICAL, |c| {
+                        stepper("crit", t().critical, t().unit_minutes, limits::CRITICAL, |c| {
                             &mut c.meeting.critical_minutes
                         }),
                         m.critical_minutes,
                         cx,
                     ))
-                    .child(section("BİLDİRİM"))
+                    .child(section(t().section_notifications))
                     .child(self.toggle(
                         "notify",
-                        "Bildirim",
+                        t().notifications,
                         n.enabled,
                         |c| &mut c.notifications.enabled,
                         cx,
                     ))
-                    .child(self.toggle("sound", "Ses", n.sound, |c| &mut c.notifications.sound, cx))
-                    .child(section("GÖRÜNÜM"))
+                    .child(self.toggle("sound", t().sound, n.sound, |c| &mut c.notifications.sound, cx))
+                    .child(section(t().section_appearance))
                     .child(self.segmented(
                         "size",
-                        "Boyut",
+                        t().size,
                         &[
                             (Size::Small, Text("S")),
                             (Size::Medium, Text("M")),
@@ -417,7 +421,7 @@ impl Render for SettingsPanel {
                     ))
                     .child(self.segmented(
                         "position",
-                        "Konum",
+                        t().position,
                         &[
                             (Position::TopLeft, Icon(icon::TOP_LEFT)),
                             (Position::TopRight, Icon(icon::TOP_RIGHT)),
@@ -431,12 +435,23 @@ impl Render for SettingsPanel {
                     ))
                     .child(self.toggle(
                         "on-top",
-                        "Her zaman üstte",
+                        t().always_on_top,
                         c.appearance.always_on_top,
                         |c| &mut c.appearance.always_on_top,
                         cx,
                     ))
-                    .children(self.autostart_row(cx)),
+                    .children(self.autostart_row(cx))
+                    .child(self.segmented(
+                        "language",
+                        t().language,
+                        &[
+                            (Language::English, Text(Language::English.native_name())),
+                            (Language::Turkish, Text(Language::Turkish.native_name())),
+                        ],
+                        c.language,
+                        |c, v| c.language = v,
+                        cx,
+                    )),
             )
     }
 }

@@ -18,6 +18,7 @@ use crate::{
     alert::{self, Alert, Chime},
     assets::icon,
     config::{AppearanceConfig, Config, NotificationConfig, Position},
+    i18n::{self, t},
     ipc::{self, Command},
     meeting::{self, Meeting, MeetingDisplay, MeetingSettings, Stage},
     platform::{self, Applied},
@@ -122,7 +123,8 @@ pub struct Widget {
     save_position: Option<Task<()>>,
     /// Toplantı süresi/saati girişi.
     input: String,
-    input_error: Option<SharedString>,
+    /// Metin olarak değil tür olarak saklanır; her çizimde etkin dilde yazılır.
+    input_error: Option<meeting::ParseError>,
     focus: FocusHandle,
     controls: Fade,
     /// Geçiş sürerken çalışan yeniden çizim döngüsü.
@@ -255,6 +257,9 @@ impl Widget {
 
     /// Ayarlar panelinde yapılan değişiklikleri anında uygular.
     fn apply_config(&mut self, config: &Config, window: &mut Window, cx: &mut Context<Self>) {
+        // Ayarlar paneli dili zaten uygulamış olabilir; burada yalnızca eşitleriz.
+        // Widget aşağıdaki `changed` ile yeniden çizilir.
+        i18n::set(config.language);
         self.pomodoro.set_settings(pomodoro_settings(config));
         self.meeting_settings = config.meeting_settings();
         self.notifications = config.notifications.clone();
@@ -366,7 +371,7 @@ impl Widget {
                 self.input.clear();
                 self.input_error = None;
             }
-            Err(e) => self.input_error = Some(e.to_string().into()),
+            Err(e) => self.input_error = Some(e),
         }
         self.changed(cx);
     }
@@ -486,14 +491,14 @@ impl Widget {
             Remaining::Over(_) => 0,
         };
         let (title, next) = match event.next {
-            Phase::ShortBreak => ("Çalışma bitti", "Kısa mola"),
-            Phase::LongBreak => ("Çalışma bitti", "Uzun mola"),
-            Phase::Work => ("Mola bitti", "Çalışma"),
+            Phase::ShortBreak => (t().work_done, t().short_break),
+            Phase::LongBreak => (t().work_done, t().long_break),
+            Phase::Work => (t().break_done, t().work),
         };
         let body = if started {
-            format!("{next} başladı · {minutes} dk")
+            i18n::phase_started(next, minutes)
         } else {
-            format!("Sırada: {} · {minutes} dk", next.to_lowercase())
+            i18n::phase_up_next(next, minutes)
         };
         Alert { title: title.into(), body, chime: Chime::Phase, urgent: false }
     }
@@ -505,23 +510,23 @@ impl Widget {
             .map(|m| m.ends_at().format("%H:%M").to_string())
             .unwrap_or_default();
         let s = &self.meeting_settings;
-        let left = |d: Duration| format!("Bitişe {} dakika kaldı · {end}", d.as_secs() / 60);
+        let left = |d: Duration| i18n::meeting_minutes_left(d.as_secs() / 60, &end);
         match stage {
             Stage::Warning => Alert {
-                title: "Toplantı".into(),
+                title: t().meeting.into(),
                 body: left(s.warning),
                 chime: Chime::Gentle,
                 urgent: false,
             },
             Stage::Critical => Alert {
-                title: "Toplantı".into(),
+                title: t().meeting.into(),
                 body: left(s.critical),
                 chime: Chime::Phase,
                 urgent: false,
             },
             Stage::Overtime | Stage::Normal => Alert {
-                title: "Toplantı süresi doldu".into(),
-                body: format!("Bitiş saati {end} idi"),
+                title: t().meeting_over.into(),
+                body: i18n::meeting_was_due(&end),
                 chime: Chime::Alarm,
                 urgent: true,
             },
@@ -770,8 +775,8 @@ impl Widget {
             .child(text)
             .when(focused && !self.input.is_empty(), |d| d.child(caret));
         let hint = match &self.input_error {
-            Some(error) => div().text_color(theme::error()).child(error.clone()),
-            None => div().text_color(theme::muted()).child("süre ya da saat  ↵"),
+            Some(error) => div().text_color(theme::error()).child(error.to_string()),
+            None => div().text_color(theme::muted()).child(t().meeting_input_hint),
         };
 
         Content {

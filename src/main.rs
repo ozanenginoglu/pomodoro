@@ -5,6 +5,7 @@
 mod alert;
 mod assets;
 mod config;
+mod i18n;
 mod ipc;
 mod meeting;
 mod platform;
@@ -20,6 +21,9 @@ use gpui_platform::application;
 
 fn main() -> ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    // Komut satırı mesajları da ayarlardaki dilde olsun.
+    let config = config::Config::load();
+    i18n::set(config.language);
 
     if let Some(arg) = std::env::args().nth(1) {
         return run_command(&arg);
@@ -28,7 +32,7 @@ fn main() -> ExitCode {
     let (commands, status) = match ipc::listen() {
         Ok(ipc::Bind::Listening(commands, status)) => (commands, status),
         Ok(ipc::Bind::AlreadyRunning) => {
-            eprintln!("Pomodoro zaten çalışıyor.");
+            eprintln!("{}", i18n::t().already_running);
             return ExitCode::SUCCESS;
         }
         Err(e) => {
@@ -42,7 +46,7 @@ fn main() -> ExitCode {
         ui::widget::bind_keys(cx);
         ui::settings::bind_keys(cx);
 
-        let config = cx.new(|_| config::Config::load());
+        let config = cx.new(|_| config);
         let appearance = config.read(cx).appearance.clone();
         // Layer-shell denemesi başarısız olursa kapanış ikinci kez çağrılır.
         platform::open_widget(cx, &appearance, move |window, cx| {
@@ -59,7 +63,7 @@ fn main() -> ExitCode {
 fn run_command(arg: &str) -> ExitCode {
     match arg {
         "-h" | "--help" | "help" => {
-            print!("{}", ipc::USAGE);
+            print!("{}", i18n::t().usage);
             return ExitCode::SUCCESS;
         }
         "-V" | "--version" => {
@@ -72,11 +76,11 @@ fn run_command(arg: &str) -> ExitCode {
     match ipc::send(arg) {
         Ok(reply) if reply == "ok" => ExitCode::SUCCESS,
         Ok(reply) => {
-            eprintln!("{reply}\n\n{}", ipc::USAGE);
+            eprintln!("{reply}\n\n{}", i18n::t().usage);
             ExitCode::from(2)
         }
         Err(_) => {
-            eprintln!("Pomodoro çalışmıyor.");
+            eprintln!("{}", i18n::t().not_running);
             ExitCode::from(1)
         }
     }
@@ -90,7 +94,7 @@ fn print_status() -> ExitCode {
         [flag, value] if flag == "--format" || flag == "-f" => match status::Format::parse(value) {
             Some(format) => format,
             None => {
-                eprintln!("bilinmeyen biçim: {value} (xmobar, waybar, plain)");
+                eprintln!("{}", i18n::unknown_format(value));
                 return ExitCode::from(2);
             }
         },
@@ -98,13 +102,13 @@ fn print_status() -> ExitCode {
             match status::Format::parse(&arg["--format=".len()..]) {
                 Some(format) => format,
                 None => {
-                    eprintln!("bilinmeyen biçim: {arg} (xmobar, waybar, plain)");
+                    eprintln!("{}", i18n::unknown_format(arg));
                     return ExitCode::from(2);
                 }
             }
         }
         _ => {
-            eprint!("{}", ipc::USAGE);
+            eprint!("{}", i18n::t().usage);
             return ExitCode::from(2);
         }
     };

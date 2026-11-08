@@ -13,23 +13,39 @@ const MAX_MEETING: Duration = Duration::from_secs(12 * 3600);
 /// Kullanıcının yazdığı şey.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MeetingInput {
-    /// "45", "45m", "45dk", "1h", "1h30", "1sa30", "90 dk"
+    /// "45", "45m", "45 min", "45dk", "1h", "1h30", "1 hour 15 min", "1sa30", "90 dk"
     Duration(Duration),
     /// "14:30", "14.30", "9:05". İki nokta/nokta her zaman saat anlamına gelir.
     EndsAt(NaiveTime),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParseError {
-    #[error("boş giriş")]
     Empty,
-    #[error("anlaşılamadı")]
     Invalid(String),
-    #[error("süre sıfır olamaz")]
     Zero,
-    #[error("toplantı 12 saatten uzun olamaz")]
     TooLong,
 }
+
+/// Widget'ta giriş alanının altında gösterilir; etkin arayüz dilinde.
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let t = crate::i18n::t();
+        f.write_str(match self {
+            ParseError::Empty => t.error_empty,
+            ParseError::Invalid(_) => t.error_invalid,
+            ParseError::Zero => t.error_zero,
+            ParseError::TooLong => t.error_too_long,
+        })
+    }
+}
+
+impl std::error::Error for ParseError {}
+
+/// Saat ve dakika birimleri, İngilizce ve Türkçe. Uzun olanlar önce: "min",
+/// "m"den önce denenmeli.
+const HOUR_UNITS: [&str; 7] = ["saat", "hours", "hour", "hrs", "hr", "sa", "h"];
+const MINUTE_UNITS: [&str; 7] = ["dakika", "minutes", "minute", "mins", "min", "dk", "m"];
 
 pub fn parse(input: &str) -> Result<MeetingInput, ParseError> {
     let s: String = input.trim().to_lowercase().split_whitespace().collect();
@@ -46,15 +62,12 @@ pub fn parse(input: &str) -> Result<MeetingInput, ParseError> {
         return NaiveTime::from_hms_opt(h, m, 0).map(MeetingInput::EndsAt).ok_or_else(invalid);
     }
 
-    // Saat birimi: "h", "sa", "saat". Dakika birimi: "m", "dk", "min", "dakika" ya da hiçbiri.
-    let (hours, rest) = match ["saat", "sa", "h"].iter().find_map(|u| s.split_once(u)) {
+    // Dakika birimi yazılmayabilir: "1h30", "90".
+    let (hours, rest) = match HOUR_UNITS.iter().find_map(|u| s.split_once(u)) {
         Some((h, rest)) => (h.parse::<u64>().map_err(|_| invalid())?, rest),
         None => (0, s.as_str()),
     };
-    let minutes_str = ["dakika", "min", "dk", "m"]
-        .iter()
-        .find_map(|u| rest.strip_suffix(u))
-        .unwrap_or(rest);
+    let minutes_str = MINUTE_UNITS.iter().find_map(|u| rest.strip_suffix(u)).unwrap_or(rest);
     let minutes = match minutes_str {
         "" => 0,
         m => m.parse::<u64>().map_err(|_| invalid())?,
@@ -231,6 +244,11 @@ mod tests {
             ("1 saat 15 dk", 75),
             ("1sa30", 90),
             ("2H", 120),
+            ("45 minutes", 45),
+            ("45 mins", 45),
+            ("1 hour 15 min", 75),
+            ("2 hours", 120),
+            ("1hr30", 90),
         ] {
             assert_eq!(parse(input), Ok(dur(minutes)), "{input:?}");
         }

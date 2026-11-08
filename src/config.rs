@@ -7,6 +7,7 @@ use std::{fs, path::PathBuf, time::Duration};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    i18n::Language,
     meeting::{MeetingDisplay, MeetingSettings},
     pomodoro::PomodoroSettings,
 };
@@ -14,6 +15,8 @@ use crate::{
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// Arayüz dili. Tablolardan önce yazılmalı (TOML kuralı), bu yüzden ilk alan.
+    pub language: Language,
     pub pomodoro: PomodoroConfig,
     pub meeting: MeetingConfig,
     pub notifications: NotificationConfig,

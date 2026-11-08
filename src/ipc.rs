@@ -50,21 +50,6 @@ impl Command {
     }
 }
 
-pub const USAGE: &str = "\
-Kullanım: pomodoro [KOMUT]
-
-Komut verilmezse widget'ı açar (zaten açıksa bir şey yapmaz).
-
-Komutlar (çalışan widget'a gönderilir):
-  toggle     Pomodoro'yu başlat / duraklat
-  reset      Mevcut evreyi baştan al
-  skip       Sonraki evreye geç
-  mode       Pomodoro ↔ toplantı
-  settings   Ayarlar panelini aç
-  status [--format xmobar|waybar|plain]
-             Durumu yazdır (Linux'ta varsayılan xmobar; widget kapalıysa boş)
-";
-
 /// Widget'ın paylaştığı, sunucu iş parçacığının okuduğu durum.
 pub type Status = Arc<Mutex<StatusInfo>>;
 
@@ -118,7 +103,7 @@ pub fn listen() -> io::Result<Bind> {
                         let info = shared.lock().map(|s| s.clone()).unwrap_or_default();
                         status::format(&info, format)
                     }
-                    None => format!("bilinmeyen biçim:{rest}"),
+                    None => crate::i18n::unknown_format(rest.trim()),
                 }
             } else if let Some(command) = Command::parse(line) {
                 match tx.send_blocking(command) {
@@ -126,7 +111,7 @@ pub fn listen() -> io::Result<Bind> {
                     Err(_) => break, // uygulama kapanıyor
                 }
             } else {
-                format!("bilinmeyen komut: {line}")
+                crate::i18n::unknown_command(line)
             };
             let _ = conn.get_mut().write_all(format!("{reply}\n").as_bytes());
         }

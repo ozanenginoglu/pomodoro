@@ -2,6 +2,8 @@
 
 use serde_json::json;
 
+use crate::i18n::{self, t};
+
 /// Widget'ın paylaştığı, biçimden bağımsız durum.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum StatusInfo {
@@ -99,7 +101,7 @@ fn waybar(info: &StatusInfo) -> String {
     let (text, tooltip, class) = match info {
         StatusInfo::Idle => (STOPWATCH.to_string(), "Pomodoro".to_string(), "idle"),
         StatusInfo::Pomodoro { remaining, on_break, paused, .. } => {
-            let (glyph, name) = if *on_break { (MUG, "Mola") } else { (STOPWATCH, "Çalışma") };
+            let (glyph, name) = if *on_break { (MUG, t().status_break) } else { (STOPWATCH, t().status_work) };
             let class = if *paused {
                 "paused"
             } else if *on_break {
@@ -111,7 +113,7 @@ fn waybar(info: &StatusInfo) -> String {
         }
         StatusInfo::Meeting { remaining, ends_at, stage, .. } => (
             format!("{USERS}  {remaining}"),
-            format!("Toplantı · {remaining} · bitiş {ends_at}"),
+            i18n::status_meeting(remaining, ends_at),
             *stage,
         ),
     };
@@ -122,7 +124,7 @@ fn plain(info: &StatusInfo) -> String {
     match info {
         StatusInfo::Idle => String::new(),
         StatusInfo::Pomodoro { remaining, paused, .. } => {
-            format!("{remaining}{}", if *paused { " (duraklatıldı)" } else { "" })
+            if *paused { format!("{remaining} ({})", t().status_paused) } else { remaining.clone() }
         }
         StatusInfo::Meeting { remaining, ends_at, .. } => format!("{remaining} → {ends_at}"),
     }
@@ -151,7 +153,7 @@ mod tests {
         let out = format(&work(), Format::Waybar);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["class"], "work");
-        assert_eq!(v["tooltip"], "Çalışma · 18:42");
+        assert_eq!(v["tooltip"], format!("{} · 18:42", t().status_work));
         let meeting = StatusInfo::Meeting {
             remaining: "+00:12".into(),
             ends_at: "14:30".into(),
