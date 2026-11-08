@@ -8,21 +8,28 @@
 //!   konum widget tarafından ayarlara kaydedilir.
 
 use gpui::{
-    App, Bounds, Entity, Pixels, Point, Render, Window, WindowBounds, WindowHandle,
-    WindowKind,
+    App, Bounds, Entity, Pixels, Point, Render, Window, WindowBounds, WindowHandle, WindowKind,
+    point, px,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows::Win32::{
     Foundation::{HWND, POINT, RECT},
-    Graphics::Gdi::{ClientToScreen, CreateEllipticRgn, CreateRoundRectRgn, SetWindowRgn},
-    UI::WindowsAndMessaging::{
-        GetClientRect, GetWindowRect, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOSIZE,
-        SetWindowPos,
+    Graphics::Gdi::{
+        ClientToScreen, CreateEllipticRgn, CreateRoundRectRgn, ScreenToClient, SetWindowRgn,
+    },
+    System::SystemInformation::GetTickCount,
+    UI::{
+        Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO},
+        WindowsAndMessaging::{
+            GetClientRect, GetCursorPos, GetWindowRect, HWND_NOTOPMOST, HWND_TOPMOST,
+            SWP_NOACTIVATE, SWP_NOSIZE, SetWindowPos,
+        },
     },
 };
 
 use super::{
-    Applied, SETTINGS_RADIUS, settings_window_options, widget_bounds, widget_window_options,
+    ACTIVE_WINDOW, Applied, SETTINGS_RADIUS, settings_window_options, widget_bounds,
+    widget_window_options,
 };
 use crate::config::AppearanceConfig;
 
@@ -158,6 +165,34 @@ pub fn is_xwayland() -> bool {
 /// olayı dairenin kenarında gelir. Yoklamaya gerek yok.
 pub fn pointer_position(_window: &Window) -> Option<Point<Pixels>> {
     None
+}
+
+/// Gözün imleci izlemesi için imlecin pencereye göre konumu (pencerenin
+/// dışında da).
+pub fn cursor_position(window: &Window) -> Option<Point<Pixels>> {
+    let hwnd = hwnd(window)?;
+    let scale = window.scale_factor();
+    let mut p = POINT::default();
+    unsafe {
+        GetCursorPos(&mut p).ok()?;
+        if !ScreenToClient(hwnd, &mut p).as_bool() {
+            return None;
+        }
+    }
+    Some(point(px(p.x as f32 / scale), px(p.y as f32 / scale)))
+}
+
+/// Kullanıcı son `ACTIVE_WINDOW` içinde klavye ya da fare kullandı mı?
+pub fn user_active() -> Option<bool> {
+    let mut info = LASTINPUTINFO { cbSize: size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    unsafe {
+        if !GetLastInputInfo(&mut info).as_bool() {
+            return None;
+        }
+        // İkisi de açılıştan beri geçen milisaniye; 49 günde bir başa sarar.
+        let idle = GetTickCount().wrapping_sub(info.dwTime);
+        Some(u128::from(idle) < ACTIVE_WINDOW.as_millis())
+    }
 }
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";

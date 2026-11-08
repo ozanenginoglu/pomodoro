@@ -23,7 +23,7 @@ actions!(settings, [CloseSettings]);
 const CONTEXT: &str = "Settings";
 const WIDTH: f32 = 320.0;
 /// Windows'ta fazladan "Oturum açılınca başlat" satırı var.
-const HEIGHT: f32 = if cfg!(windows) { 692.0 } else { 658.0 };
+const HEIGHT: f32 = if cfg!(windows) { 726.0 } else { 692.0 };
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("escape", CloseSettings, Some(CONTEXT))]);
@@ -350,9 +350,13 @@ impl Render for SettingsPanel {
                         cx,
                     ))
                     .child(self.stepper(
-                        stepper("rounds", t().rounds_before_long_break, t().unit_rounds, limits::ROUNDS, |c| {
-                            &mut c.pomodoro.rounds_before_long_break
-                        }),
+                        stepper(
+                            "rounds",
+                            t().rounds_before_long_break,
+                            t().unit_rounds,
+                            limits::ROUNDS,
+                            |c| &mut c.pomodoro.rounds_before_long_break,
+                        ),
                         p.rounds_before_long_break,
                         cx,
                     ))
@@ -368,6 +372,13 @@ impl Render for SettingsPanel {
                         t().auto_start_work,
                         p.auto_start_work,
                         |c| &mut c.pomodoro.auto_start_work,
+                        cx,
+                    ))
+                    .child(self.toggle(
+                        "guard-breaks",
+                        t().guard_breaks,
+                        p.guard_breaks,
+                        |c| &mut c.pomodoro.guard_breaks,
                         cx,
                     ))
                     .child(section(t().section_meeting))
@@ -405,7 +416,13 @@ impl Render for SettingsPanel {
                         |c| &mut c.notifications.enabled,
                         cx,
                     ))
-                    .child(self.toggle("sound", t().sound, n.sound, |c| &mut c.notifications.sound, cx))
+                    .child(self.toggle(
+                        "sound",
+                        t().sound,
+                        n.sound,
+                        |c| &mut c.notifications.sound,
+                        cx,
+                    ))
                     .child(section(t().section_appearance))
                     .child(self.segmented(
                         "size",

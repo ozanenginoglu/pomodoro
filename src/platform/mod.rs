@@ -1,6 +1,8 @@
 //! Platforma özel davranışlar. Geri kalan kod bu modülün arkasındaki
 //! ortak arayüzü kullanır; Linux / Windows farkları yalnızca burada yaşar.
 
+use std::time::Duration;
+
 use gpui::{
     App, Bounds, Pixels, Point, WindowBackgroundAppearance, WindowBounds, WindowDecorations,
     WindowKind, WindowOptions, point, px, size,
@@ -25,6 +27,10 @@ pub const SETTINGS_APP_ID: &str = "pomodoro-settings";
 /// Ayarlar panelinin köşe yarıçapı (mantıksal piksel). Windows'ta pencere
 /// bölgesi de buna göre kırpılır.
 pub const SETTINGS_RADIUS: f32 = 16.0;
+
+/// Mola koruması: son klavye/fare kullanımından bu kadar süre geçmediyse
+/// kullanıcı bilgisayar başında sayılır.
+pub const ACTIVE_WINDOW: Duration = Duration::from_secs(10);
 
 /// Bir görünüm ayarı değişikliğinin nasıl uygulandığı.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

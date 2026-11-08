@@ -1,4 +1,8 @@
 //! Pomodoro döngüsü: çalışma → kısa mola → … → uzun mola → çalışma.
+//!
+//! Mola koruması: mola sürerken kullanıcı bilgisayar başındaysa mola süresi
+//! "tutulur" (durur) ve kullanıcı uzaklaşınca kaldığı yerden devam eder.
+//! Böylece mola, gerçekten uzakta geçen süre kadar sürer.
 
 use std::time::{Duration, Instant};
 
@@ -65,12 +69,15 @@ pub struct Pomodoro {
     /// Mevcut döngüde tamamlanan çalışma turu sayısı.
     completed: u32,
     timer: Countdown,
+    /// Mola, kullanıcı bilgisayar başında olduğu için durduruldu. Kullanıcının
+    /// duraklatmasından farklıdır: arayüzde mola sürüyor gibi görünür.
+    held: bool,
 }
 
 impl Pomodoro {
     pub fn new(settings: PomodoroSettings) -> Self {
         let timer = Countdown::new(settings.work);
-        Self { settings, phase: Phase::Work, completed: 0, timer }
+        Self { settings, phase: Phase::Work, completed: 0, timer, held: false }
     }
 
     pub fn phase(&self) -> Phase {
@@ -101,12 +108,52 @@ impl Pomodoro {
         (filled, total)
     }
 
+    /// Mola, kullanıcı bilgisayar başında olduğu için mi duruyor?
+    pub fn is_held(&self) -> bool {
+        self.held
+    }
+
+    /// Çalışıyor ya da yalnızca mola koruması yüzünden duruyor (kullanıcı
+    /// duraklatmadı).
+    pub fn is_active(&self) -> bool {
+        self.timer.is_running() || self.held
+    }
+
+    /// Mola koruması: kullanıcı bilgisayar başındaysa süren molayı tutar,
+    /// uzaklaşınca bırakır. Çalışma evresinde ve duraklatılmış molada bir
+    /// şey yapmaz. Durum değiştiyse `true`.
+    pub fn set_user_present(&mut self, present: bool, now: Instant) -> bool {
+        if self.phase == Phase::Work {
+            return false;
+        }
+        match (present, self.held) {
+            (true, false) if self.timer.is_running() => {
+                self.timer.pause(now);
+                self.held = true;
+                true
+            }
+            (false, true) => {
+                self.timer.start(now);
+                self.held = false;
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn toggle(&mut self, now: Instant) {
+        if self.held {
+            // Tutulan mola kullanıcıya sürüyor görünür; "duraklat" onu
+            // gerçekten duraklatır (sayaç zaten durmuş).
+            self.held = false;
+            return;
+        }
         self.timer.toggle(now);
     }
 
     /// Mevcut evreyi baştan alır (durmuş halde).
     pub fn reset(&mut self) {
+        self.held = false;
         self.timer.reset();
     }
 
@@ -159,6 +206,7 @@ impl Pomodoro {
 
     fn enter(&mut self, phase: Phase, start: bool, now: Instant) {
         self.phase = phase;
+        self.held = false;
         self.timer = Countdown::new(self.settings.duration_of(phase));
         if start {
             self.timer.start(now);
@@ -289,6 +337,88 @@ mod tests {
         p.toggle(now);
         p.set_settings(PomodoroSettings { work: 30 * MIN, ..settings() });
         assert_eq!(p.timer().duration(), 50 * MIN, "çalışan evre değişmemeli");
+    }
+
+    /// Çalışmayı bitirip kendiliğinden başlayan kısa molaya geçer.
+    fn on_break(now: &mut Instant) -> Pomodoro {
+        let mut p = Pomodoro::new(settings());
+        finish(&mut p, now);
+        assert_eq!(p.phase(), Phase::ShortBreak);
+        p
+    }
+
+    #[test]
+    fn break_is_held_while_user_is_present() {
+        let mut now = Instant::now();
+        let mut p = on_break(&mut now);
+        assert!(p.set_user_present(true, now));
+        assert!(p.is_held() && p.is_active());
+        // Bilgisayar başında geçen 3 dakika moladan düşmez.
+        now += 3 * MIN;
+        assert_eq!(p.timer().remaining(now), Remaining::Left(5 * MIN));
+        assert_eq!(p.tick(now), None);
+        assert!(p.set_user_present(false, now));
+        assert!(!p.is_held());
+        now += 2 * MIN;
+        assert_eq!(p.timer().remaining(now), Remaining::Left(3 * MIN));
+    }
+
+    #[test]
+    fn break_only_ends_after_enough_time_away() {
+        let mut now = Instant::now();
+        let mut p = on_break(&mut now);
+        for _ in 0..4 {
+            now += MIN; // 1 dk uzakta
+            p.set_user_present(true, now);
+            now += 10 * MIN; // 10 dk bilgisayar başında
+            assert_eq!(p.tick(now), None);
+            p.set_user_present(false, now);
+        }
+        now += MIN;
+        assert_eq!(p.tick(now).map(|e| e.next), Some(Phase::Work));
+    }
+
+    #[test]
+    fn presence_is_ignored_during_work_and_when_paused() {
+        let now = Instant::now();
+        let mut p = Pomodoro::new(settings());
+        p.toggle(now);
+        assert!(!p.set_user_present(true, now), "çalışma evresi tutulmaz");
+
+        let mut now = now;
+        let mut p = on_break(&mut now);
+        p.toggle(now); // kullanıcı molayı duraklattı
+        assert!(!p.set_user_present(true, now));
+        assert!(!p.set_user_present(false, now), "duraklatılmış mola kendiliğinden başlamaz");
+        assert_eq!(p.timer().state(), TimerState::Paused);
+    }
+
+    #[test]
+    fn toggling_a_held_break_pauses_it() {
+        let mut now = Instant::now();
+        let mut p = on_break(&mut now);
+        p.set_user_present(true, now);
+        p.toggle(now);
+        assert!(!p.is_held() && !p.is_active());
+        assert!(!p.set_user_present(false, now + MIN), "duraklatılmış kalmalı");
+        p.toggle(now + MIN);
+        assert!(p.timer().is_running());
+    }
+
+    #[test]
+    fn skipping_or_resetting_releases_the_hold() {
+        let mut now = Instant::now();
+        let mut p = on_break(&mut now);
+        p.set_user_present(true, now);
+        p.skip(now);
+        assert_eq!(p.phase(), Phase::Work);
+        assert!(!p.is_held());
+
+        let mut p = on_break(&mut now);
+        p.set_user_present(true, now);
+        p.reset();
+        assert!(!p.is_held());
+        assert_eq!(p.timer().state(), TimerState::Idle);
     }
 
     #[test]

@@ -10,6 +10,7 @@ use gpui::{
 };
 
 use super::{
+    eye::{self, Eye, EyeStyle, Mood, Pose, SharedEyeCache},
     ring::{RingStyle, SharedRingCache, ring},
     settings::{self, SettingsPanel},
     theme,
@@ -52,6 +53,10 @@ const FADE: Duration = Duration::from_millis(200);
 const FRAME: Duration = Duration::from_millis(16);
 /// Kontroller açıkken imlecin hâlâ dairede olup olmadığını yoklama aralığı.
 const POINTER_POLL: Duration = Duration::from_millis(100);
+/// Göz görünürken yeniden çizim aralığı (~30 fps; yavaş hareketler için yeterli).
+const EYE_FRAME: Duration = Duration::from_millis(33);
+/// Mola korunurken kullanıcının bilgisayar başında olup olmadığını yoklama aralığı.
+const PRESENCE_POLL: Duration = Duration::from_millis(250);
 
 // Aşağıdaki ölçüler 200 px'lik (M) widget içindir; diğer boyutlarda orantılı ölçeklenir.
 const BASE_SIZE: f32 = 200.0;
@@ -64,6 +69,10 @@ const TOP_HEIGHT: f32 = 30.0;
 const INFO_HEIGHT: f32 = 18.0;
 /// Hover'da bilgi satırının yerine açılan kontrol satırı.
 const CONTROLS_HEIGHT: f32 = 40.0;
+/// Mola bekçisi gözün alanı ve altındaki küçük saat.
+const EYE_WIDTH: f32 = 96.0;
+const EYE_HEIGHT: f32 = 60.0;
+const EYE_CLOCK_SIZE: f32 = 24.0;
 /// Toplantı girişine yazılabilecek en uzun metin.
 const INPUT_MAX: usize = 14;
 
@@ -115,6 +124,17 @@ pub struct Widget {
     meeting: Option<Meeting>,
     meeting_settings: MeetingSettings,
     notifications: NotificationConfig,
+    /// Mola koruması açık mı (ayar).
+    guard_breaks: bool,
+    /// Kullanıcı bilgisayar başında mı? Mola korunurken yoklanır; platform
+    /// bilemiyorsa `None` (o zaman göz görünmez, mola her zamanki gibi işler).
+    activity: Option<bool>,
+    next_presence_poll: Instant,
+    /// Mola bekçisi göz; yalnızca mola korunurken var.
+    eye: Option<Eye>,
+    /// En son çizilen göz pozu; değişmedikçe yeniden çizilmez.
+    drawn_eye: Option<[i32; 4]>,
+    eye_image: SharedEyeCache,
     /// Uygulanmış görünüm ayarları (konum değişikliğini fark etmek için).
     appearance: AppearanceConfig,
     /// Wayland'de konum ancak yeniden açılışta değişir; sayaçlar dururken yapılır.
@@ -185,6 +205,12 @@ impl Widget {
             meeting: None,
             meeting_settings: c.meeting_settings(),
             notifications: c.notifications.clone(),
+            guard_breaks: c.pomodoro.guard_breaks,
+            activity: None,
+            next_presence_poll: Instant::now(),
+            eye: None,
+            drawn_eye: None,
+            eye_image: SharedEyeCache::default(),
             appearance: c.appearance.clone(),
             pending_restart: false,
             save_position: None,
@@ -245,7 +271,7 @@ impl Widget {
                 state => StatusInfo::Pomodoro {
                     remaining: left(timer.remaining(now)),
                     on_break: self.pomodoro.phase() != Phase::Work,
-                    paused: state == TimerState::Paused,
+                    paused: state == TimerState::Paused && !self.pomodoro.is_held(),
                     color: theme::hex(theme::phase(self.pomodoro.phase())),
                 },
             }
@@ -263,6 +289,10 @@ impl Widget {
         self.pomodoro.set_settings(pomodoro_settings(config));
         self.meeting_settings = config.meeting_settings();
         self.notifications = config.notifications.clone();
+        self.guard_breaks = config.pomodoro.guard_breaks;
+        if !self.guard_breaks {
+            self.pomodoro.set_user_present(false, Instant::now());
+        }
         if let Some(meeting) = &mut self.meeting {
             meeting.set_settings(self.meeting_settings.clone());
         }
@@ -424,6 +454,41 @@ impl Widget {
         cx.notify();
         self.publish_status();
         self.ensure_ticker(cx);
+        self.ensure_animation(cx);
+    }
+
+    // ---- Mola koruması --------------------------------------------------
+
+    /// Bir mola sürüyor (ya da kullanıcı yüzünden tutuluyor) ve ayar açık.
+    fn guarding(&self) -> bool {
+        self.guard_breaks && self.pomodoro.phase() != Phase::Work && self.pomodoro.is_active()
+    }
+
+    /// Göz görünür mü? Kullanıcının etkinliği bilinemiyorsa koruma yoktur.
+    fn shows_eye(&self) -> bool {
+        self.guarding() && self.activity.is_some()
+    }
+
+    /// Kullanıcı bilgisayar başındaysa molayı tutar, uzaklaşınca bırakır.
+    /// Animasyon döngüsünden çağrılır.
+    fn poll_presence(&mut self, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        if !self.guarding() {
+            self.activity = None;
+            return;
+        }
+        if now < self.next_presence_poll {
+            return;
+        }
+        self.next_presence_poll = now + PRESENCE_POLL;
+        self.activity = platform::user_active();
+        // Bilinemiyorsa mola her zamanki gibi işler.
+        let present = self.activity.unwrap_or(false);
+        if self.pomodoro.set_user_present(present, now) {
+            log::debug!("mola {}", if present { "tutuldu" } else { "sürüyor" });
+            self.publish_status();
+            self.ensure_ticker(cx);
+        }
     }
 
     // ---- Zamanlama ---------------------------------------------------------
@@ -460,6 +525,8 @@ impl Widget {
                         if let Some(event) = this.pomodoro.tick(now) {
                             let alert = this.phase_alert(event);
                             alert::fire(alert, &this.notifications);
+                            // Mola başladıysa göz belirsin.
+                            this.ensure_animation(cx);
                         }
                         if let Some(stage) = this.meeting.as_mut().and_then(|m| m.tick(now)) {
                             let alert = this.meeting_alert(stage);
@@ -548,24 +615,45 @@ impl Widget {
         }
     }
 
+    fn is_animating(&self) -> bool {
+        self.controls.is_animating() || self.guarding()
+    }
+
     /// X11'de pencere odakta değilken ve fare hareket etmezken animasyon
     /// kareleri gelmeyebiliyor. Bu yüzden `request_animation_frame` yerine
     /// geçiş bitene kadar kendi zamanlayıcımızla yeniden çizim istiyoruz.
+    /// Mola korunurken de döngü sürer: göz canlıdır ve kullanıcı yoklanır.
+    /// Göz kıpırdamıyorsa (bakışlar arası, imleç durgun) yeniden çizilmez.
     fn ensure_animation(&mut self, cx: &mut Context<Self>) {
-        if self.animation.is_some() {
+        if self.animation.is_some() || !self.is_animating() {
             return;
         }
+        let Some(window) = cx.windows().first().copied() else {
+            return;
+        };
         self.animation = Some(cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(FRAME).await;
-                let keep_going = this
-                    .update(cx, |this, cx| {
-                        cx.notify();
-                        let animating = this.controls.is_animating();
-                        if !animating {
-                            this.animation = None;
-                        }
-                        animating
+                let frame =
+                    this.read_with(cx, |this, _| {
+                        if this.controls.is_animating() { FRAME } else { EYE_FRAME }
+                    })
+                    .unwrap_or(FRAME);
+                cx.background_executor().timer(frame).await;
+                let keep_going = window
+                    .update(cx, |_, window, cx| {
+                        this.update(cx, |this, cx| {
+                            this.poll_presence(cx);
+                            let eye_moved = this.step_eye(Instant::now(), window);
+                            if eye_moved || this.controls.is_animating() {
+                                cx.notify();
+                            }
+                            let animating = this.is_animating();
+                            if !animating {
+                                this.animation = None;
+                            }
+                            animating
+                        })
+                        .unwrap_or(false)
                     })
                     .unwrap_or(false);
                 if !keep_going {
@@ -626,6 +714,42 @@ impl Widget {
 
     // ---- Görünüm parçaları ---------------------------------------------------
 
+    /// Gözü bir kare ilerletir. Kullanıcı bilgisayar başındayken imleci izler.
+    /// Görünüşü çizilenden farklıysa `true`.
+    fn step_eye(&mut self, now: Instant, window: &Window) -> bool {
+        if !self.shows_eye() {
+            self.eye = None;
+            return self.drawn_eye.is_some();
+        }
+        let mood = if self.pomodoro.is_held() { Mood::Watching } else { Mood::Relaxed };
+        let cursor = (mood == Mood::Watching)
+            .then(|| platform::cursor_position(window))
+            .flatten()
+            .map(|p| {
+                let size = window.viewport_size();
+                let side = f32::from(size.width.min(size.height));
+                // Göz dairenin ortasının biraz üstünde.
+                let dx = f32::from(p.x) - f32::from(size.width) / 2.0;
+                let dy = f32::from(p.y) - (f32::from(size.height) / 2.0 - side * 0.08);
+                eye::cursor_direction(dx, dy, side)
+            });
+        let eye = self.eye.get_or_insert_with(|| Eye::new(now));
+        eye.update(now, mood, cursor);
+        self.drawn_eye != Some(eye.pose(now).quantized())
+    }
+
+    /// Çizilecek göz pozu (hareket `step_eye`'da ilerler).
+    fn eye_pose(&mut self, now: Instant) -> Option<Pose> {
+        let pose = if self.shows_eye() {
+            Some(self.eye.get_or_insert_with(|| Eye::new(now)).pose(now))
+        } else {
+            self.eye = None;
+            None
+        };
+        self.drawn_eye = pose.map(|p| p.quantized());
+        pose
+    }
+
     fn key_context(&self) -> &'static str {
         match (self.mode, &self.meeting) {
             (Mode::Pomodoro, _) => "Widget Pomodoro",
@@ -658,9 +782,19 @@ impl Widget {
             )
     }
 
-    fn pomodoro_view(&self, now: Instant, reveal: f32, cx: &mut Context<Self>) -> Content {
+    fn pomodoro_view(
+        &self,
+        now: Instant,
+        reveal: f32,
+        eye: Option<Pose>,
+        cx: &mut Context<Self>,
+    ) -> Content {
         let timer = self.pomodoro.timer();
-        let state = timer.state();
+        // Tutulan mola kullanıcıya sürüyor görünür; duraklatılmış değildir.
+        let state = match timer.state() {
+            TimerState::Paused if self.pomodoro.is_held() => TimerState::Running,
+            state => state,
+        };
         let color = theme::phase(self.pomodoro.phase());
         let (filled, total) = self.pomodoro.rounds();
         let k = self.scale;
@@ -691,19 +825,44 @@ impl Widget {
                     .on_click(cx.listener(|this, _, _, cx| this.skip(cx))),
             );
 
+        let clock_color = match state {
+            TimerState::Paused => theme::muted(),
+            _ => theme::text(),
+        };
+        let main = match eye {
+            // Mola korunurken: göz ve altında küçük saat.
+            Some(pose) => {
+                let shrink = 1.0 - 0.3 * reveal;
+                let style = EyeStyle {
+                    sclera: theme::text(),
+                    iris: color,
+                    pupil: theme::surface(),
+                    line: theme::text(),
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .child(
+                        div()
+                            .w(px(EYE_WIDTH * k * shrink))
+                            .h(px(EYE_HEIGHT * k * shrink))
+                            .child(eye::eye(self.eye_image.clone(), pose, style)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(EYE_CLOCK_SIZE * k))
+                            .text_color(clock_color)
+                            .child(SharedString::from(remaining_text(timer.remaining(now)))),
+                    )
+            }
+            None => clock(timer.remaining(now), reveal, k, clock_color),
+        };
+
         Content {
             ring_color: color,
             fraction: 1.0 - timer.progress(now),
-            main: clock(
-                timer.remaining(now),
-                reveal,
-                k,
-                match state {
-                    TimerState::Paused => theme::muted(),
-                    _ => theme::text(),
-                },
-            )
-            .into_any_element(),
+            main: main.into_any_element(),
             info: Some(dots.into_any_element()),
             controls: Some(controls.into_any_element()),
         }
@@ -821,12 +980,15 @@ fn big_text(text: SharedString, reveal: f32, k: f32, color: Hsla) -> Div {
         .child(text)
 }
 
-fn clock(remaining: Remaining, reveal: f32, k: f32, color: Hsla) -> Div {
-    let text = match remaining {
+fn remaining_text(remaining: Remaining) -> String {
+    match remaining {
         Remaining::Left(d) => format_clock(d),
         Remaining::Over(d) => format!("+{}", format_clock(d)),
-    };
-    big_text(text.into(), reveal, k, color)
+    }
+}
+
+fn clock(remaining: Remaining, reveal: f32, k: f32, color: Hsla) -> Div {
+    big_text(remaining_text(remaining).into(), reveal, k, color)
 }
 
 /// Config'deki Pomodoro ayarları. Debug derlemesinde `POMODORO_DEMO=1` ile
@@ -886,9 +1048,10 @@ impl Render for Widget {
         let now = Instant::now();
         let reveal = self.controls.value();
         let k = self.scale;
+        let eye = self.eye_pose(now);
 
         let content = match (self.mode, &self.meeting) {
-            (Mode::Pomodoro, _) => self.pomodoro_view(now, reveal, cx),
+            (Mode::Pomodoro, _) => self.pomodoro_view(now, reveal, eye, cx),
             (Mode::Meeting, Some(meeting)) => self.meeting_view(meeting, now, reveal, cx),
             (Mode::Meeting, None) => self.meeting_input_view(window),
         };

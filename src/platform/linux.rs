@@ -6,7 +6,13 @@
 //! - **X11 / XWayland**: konum açılışta verilir; "üstte dur" ve "görev
 //!   çubuğunda gösterme" EWMH ipuçlarıyla istenir.
 
-use std::cell::RefCell;
+use std::{
+    cell::RefCell,
+    sync::{
+        OnceLock,
+        atomic::{AtomicU8, Ordering},
+    },
+};
 
 use gpui::{
     App, Bounds, Entity, Pixels, Point, Render, Window, WindowBounds, WindowHandle, WindowKind,
@@ -18,12 +24,16 @@ use gpui::{
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use x11rb::{
     connection::Connection,
-    protocol::xproto::{ClientMessageEvent, ConfigureWindowAux, ConnectionExt, EventMask},
+    protocol::{
+        screensaver::ConnectionExt as _,
+        xproto::{ClientMessageEvent, ConfigureWindowAux, ConnectionExt, EventMask},
+    },
     rust_connection::RustConnection,
 };
 
 use super::{
-    APP_ID, Applied, SETTINGS_APP_ID, settings_window_options, widget_bounds, widget_window_options,
+    ACTIVE_WINDOW, APP_ID, Applied, SETTINGS_APP_ID, settings_window_options, widget_bounds,
+    widget_window_options,
 };
 use crate::config::{AppearanceConfig, Position};
 
@@ -248,6 +258,127 @@ pub fn pointer_position(window: &Window) -> Option<Point<Pixels>> {
         )
     })
     .flatten()
+}
+
+/// Gözün imleci izlemesi için imlecin pencereye göre konumu; pencerenin
+/// dışında da (X11). Wayland'de imleç ancak pencerenin üstündeyken bilinir.
+pub fn cursor_position(window: &Window) -> Option<Point<Pixels>> {
+    pointer_position(window)
+}
+
+/// Kullanıcı son `ACTIVE_WINDOW` içinde klavye ya da fare kullandı mı?
+/// Bilinemiyorsa (ör. GNOME Wayland) `None`.
+///
+/// Wayland oturumunda (XWayland dahil) `ext-idle-notify-v1` kullanılır; X
+/// sunucusu yalnızca X istemcilerine giden girdiyi görür. X11'de
+/// MIT-SCREEN-SAVER uzantısı.
+pub fn user_active() -> Option<bool> {
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        return wayland_idle::active();
+    }
+    with_x11(|conn| {
+        let root = conn.setup().roots.first()?.root;
+        let info = conn.screensaver_query_info(root).ok()?.reply().ok()?;
+        Some(u128::from(info.ms_since_user_input) < ACTIVE_WINDOW.as_millis())
+    })
+}
+
+/// `ext-idle-notify-v1` ile hareketsizlik takibi. GPUI'nin bağlantısından
+/// bağımsız, kendi iş parçacığında çalışan ikinci bir Wayland bağlantısı.
+mod wayland_idle {
+    use super::*;
+    use wayland_client::{
+        Connection, Dispatch, Proxy, QueueHandle,
+        globals::{GlobalListContents, registry_queue_init},
+        protocol::{wl_registry, wl_seat::WlSeat},
+    };
+    use wayland_protocols::ext::idle_notify::v1::client::{
+        ext_idle_notification_v1::{self, ExtIdleNotificationV1},
+        ext_idle_notifier_v1::ExtIdleNotifierV1,
+    };
+
+    const STARTING: u8 = 0;
+    const ACTIVE: u8 = 1;
+    const IDLE: u8 = 2;
+    const UNSUPPORTED: u8 = 3;
+
+    static STATE: AtomicU8 = AtomicU8::new(STARTING);
+    static STARTED: OnceLock<()> = OnceLock::new();
+
+    pub fn active() -> Option<bool> {
+        STARTED.get_or_init(|| {
+            let spawned = std::thread::Builder::new().name("idle-notify".into()).spawn(|| {
+                if let Err(e) = run() {
+                    log::info!("Wayland hareketsizlik bildirimi yok: {e}");
+                }
+                STATE.store(UNSUPPORTED, Ordering::Relaxed);
+            });
+            if spawned.is_err() {
+                STATE.store(UNSUPPORTED, Ordering::Relaxed);
+            }
+        });
+        match STATE.load(Ordering::Relaxed) {
+            // Bildirim gelene kadar kullanıcı bilgisayar başında sayılır.
+            STARTING | ACTIVE => Some(true),
+            IDLE => Some(false),
+            _ => None,
+        }
+    }
+
+    struct State;
+
+    fn run() -> anyhow::Result<()> {
+        let conn = Connection::connect_to_env()?;
+        let (globals, mut queue) = registry_queue_init::<State>(&conn)?;
+        let qh = queue.handle();
+        let seat: WlSeat = globals.bind(&qh, 1..=1, ())?;
+        let notifier: ExtIdleNotifierV1 = globals.bind(&qh, 1..=2, ())?;
+        let timeout = ACTIVE_WINDOW.as_millis() as u32;
+        // Sürüm 2: video oynatıcıların "ekranı karartma" isteklerini yok sayar;
+        // yalnızca gerçek klavye/fare girdisine bakar.
+        if notifier.version() >= 2 {
+            notifier.get_input_idle_notification(timeout, &seat, &qh, ());
+        } else {
+            notifier.get_idle_notification(timeout, &seat, &qh, ());
+        }
+        loop {
+            queue.blocking_dispatch(&mut State)?;
+        }
+    }
+
+    impl Dispatch<ExtIdleNotificationV1, ()> for State {
+        fn event(
+            _: &mut Self,
+            _: &ExtIdleNotificationV1,
+            event: ext_idle_notification_v1::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            let state = match event {
+                ext_idle_notification_v1::Event::Idled => IDLE,
+                ext_idle_notification_v1::Event::Resumed => ACTIVE,
+                _ => return,
+            };
+            log::debug!("wayland hareketsizlik: {}", state == IDLE);
+            STATE.store(state, Ordering::Relaxed);
+        }
+    }
+
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+
+    wayland_client::delegate_noop!(State: ignore WlSeat);
+    wayland_client::delegate_noop!(State: ExtIdleNotifierV1);
 }
 
 /// Linux'ta açılışta başlatma pencere yöneticisinin işi (xmonad `spawnOnce`,

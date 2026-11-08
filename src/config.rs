@@ -32,6 +32,9 @@ pub struct PomodoroConfig {
     pub rounds_before_long_break: u32,
     pub auto_start_breaks: bool,
     pub auto_start_work: bool,
+    /// Mola, kullanıcı klavyeyi/fareyi kullandığı sürece durur; yalnızca
+    /// bilgisayardan uzakta geçen süre sayılır.
+    pub guard_breaks: bool,
 }
 
 impl Default for PomodoroConfig {
@@ -43,6 +46,7 @@ impl Default for PomodoroConfig {
             rounds_before_long_break: 4,
             auto_start_breaks: true,
             auto_start_work: false,
+            guard_breaks: true,
         }
     }
 }

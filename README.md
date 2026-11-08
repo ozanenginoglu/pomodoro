@@ -9,11 +9,12 @@ Runs on **Linux (X11 and Wayland)** and **Windows**. It's written in Rust with [
 | | |
 |---|---|
 | **Pomodoro** | Work, short break and long break rounds. The dots under the clock show where you are in the cycle. Breaks can start on their own when a work round ends. |
+| **Break guard** | A break only counts down while you're away from the computer. If you keep typing or moving the mouse, it waits, and an eye on the widget watches you until you step away. |
 | **Meeting** | Type a length (`45`, `1h30`) or an end time (`14:30`) and it counts down. The ring turns yellow, then orange as the end gets close, and red when the meeting runs over. |
 | **Alerts** | A desktop notification and a short bell chime at the end of each round and at each meeting stage. |
 | **Status bar** | `pomodoro status` prints the current state for xmobar, waybar or plain text. |
 
-![The settings panel: work, short break and long break lengths, rounds before a long break, auto-start switches, meeting display and warning times, notification and sound switches, and the widget's size, position, always-on-top setting and language](docs/settings.png)
+![The settings panel: work, short break and long break lengths, rounds before a long break, auto-start and break guard switches, meeting display and warning times, notification and sound switches, and the widget's size, position, always-on-top setting and language](docs/settings.png)
 
 ## Install
 
@@ -82,6 +83,19 @@ Switch to meeting mode, type how long the meeting is or when it ends, and press 
 | `14:30` or `14.30` | Ends at 14:30 (tomorrow, if that time has already passed today) |
 
 A meeting can be up to 12 hours long. Pomodoro keeps running in the background while you're in meeting mode, and the other way round.
+
+### Break guard
+
+When a break starts, an eye opens on the widget. The break only counts down while you're away:
+
+![Three widgets during a short break: the eye wide open and looking down at the cursor while the break waits; the eye narrowed under a frowning brow, looking right at the cursor; and the eye half-closed and relaxed while the break counts down](docs/break-guard.png)
+
+- **You're still working** (you typed or moved the mouse in the last 10 seconds): the break waits. The eye opens wide, follows your cursor and, after a few seconds, frowns.
+- **You stepped away** (no keyboard or mouse input for 10 seconds): the eye relaxes and looks around, and the break counts down.
+
+So a 5-minute break ends after 5 minutes away from the computer. You can still pause the break or skip it with the controls. To turn the guard off, switch off *Pause breaks while I work* in the settings panel.
+
+Activity comes from the system's idle time: the MIT-SCREEN-SAVER extension on X11, the `ext-idle-notify-v1` protocol on Wayland (Hyprland, Sway, niri, KDE Plasma, …) and `GetLastInputInfo` on Windows. On a Wayland compositor without `ext-idle-notify-v1`, the eye doesn't appear and breaks run as usual. The eye follows the cursor on X11 and Windows; on Wayland it looks straight ahead, because Wayland doesn't tell apps where the cursor is.
 
 ### Command line
 
@@ -168,6 +182,7 @@ long_break_minutes = 15         # 1–60
 rounds_before_long_break = 4    # 1–12
 auto_start_breaks = true
 auto_start_work = false
+guard_breaks = true             # breaks only count down while you're away
 
 [meeting]
 display = "both"                # "remaining", "end_time" or "both"
