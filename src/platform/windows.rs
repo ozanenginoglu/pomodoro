@@ -8,7 +8,7 @@
 //!   konum widget tarafından ayarlara kaydedilir.
 
 use gpui::{
-    App, AppContext, Bounds, Entity, Pixels, Point, Render, Window, WindowBounds, WindowHandle,
+    App, Bounds, Entity, Pixels, Point, Render, Window, WindowBounds, WindowHandle,
     WindowKind,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
