@@ -13,10 +13,11 @@ use gpui::{
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows::Win32::{
-    Foundation::HWND,
-    Graphics::Gdi::{CreateEllipticRgn, SetWindowRgn},
+    Foundation::{HWND, POINT, RECT},
+    Graphics::Gdi::{ClientToScreen, CreateEllipticRgn, SetWindowRgn},
     UI::WindowsAndMessaging::{
-        HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOSIZE, SetWindowPos,
+        GetClientRect, GetWindowRect, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOSIZE,
+        SetWindowPos,
     },
 };
 
@@ -62,27 +63,53 @@ fn hwnd(window: &Window) -> Option<HWND> {
     }
 }
 
+/// İstemci alanının (GPUI'nin çizdiği alan) pencere dikdörtgeni içindeki
+/// konumu ve boyutu, fiziksel piksel. Başlık çubuğu gizlendiğinde GPUI yalnızca
+/// üst kenarı kaldırır; sol, sağ ve alttaki görünmez boyutlandırma kenarlıkları
+/// pencere dikdörtgeninde kalır. Hem bölge hem konum bu farka göre ayarlanmalı.
+fn client_area(hwnd: HWND) -> Option<(POINT, RECT)> {
+    unsafe {
+        let mut window = RECT::default();
+        let mut client = RECT::default();
+        GetWindowRect(hwnd, &mut window).ok()?;
+        GetClientRect(hwnd, &mut client).ok()?;
+        let mut origin = POINT::default();
+        if !ClientToScreen(hwnd, &mut origin).as_bool() {
+            return None;
+        }
+        Some((POINT { x: origin.x - window.left, y: origin.y - window.top }, client))
+    }
+}
+
 /// Konum, boyut ve "üstte dur" ayarını uygular; daire bölgesini yeniler.
 pub fn apply_appearance(window: &mut Window, cx: &App, appearance: &AppearanceConfig) -> Applied {
     let Some(hwnd) = hwnd(window) else { return Applied::Now };
     let scale = window.scale_factor();
-    let origin = widget_bounds(cx, appearance).origin;
-    let (x, y) = ((f32::from(origin.x) * scale).round(), (f32::from(origin.y) * scale).round());
+    let (offset, client) = client_area(hwnd).unwrap_or_default();
+    // Daire istemci alanındaki karenin ortasında çizilir (bkz. `ring`).
     let side = (appearance.size.pixels() * scale).round() as i32;
+    let (width, height) = (client.right - client.left, client.bottom - client.top);
+    let side = if width > 0 && height > 0 { side.min(width).min(height) } else { side };
+    let left = offset.x + (width.max(side) - side) / 2;
+    let top = offset.y + (height.max(side) - side) / 2;
+
+    // Ayarlardaki konum istemci alanının sol üst köşesidir.
+    let origin = widget_bounds(cx, appearance).origin;
+    let x = (f32::from(origin.x) * scale).round() as i32 - offset.x;
+    let y = (f32::from(origin.y) * scale).round() as i32 - offset.y;
     let order = if appearance.always_on_top { HWND_TOPMOST } else { HWND_NOTOPMOST };
     unsafe {
-        if let Err(e) =
-            SetWindowPos(hwnd, Some(order), x as i32, y as i32, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE)
-        {
+        if let Err(e) = SetWindowPos(hwnd, Some(order), x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE) {
             log::warn!("pencere konumlanamadı: {e}");
         }
         // Kenar yumuşatması kırpılmasın diye bölge bir piksel geniş.
         // Bölgenin sahibi artık sistemdir; serbest bırakmıyoruz.
-        let region = CreateEllipticRgn(0, 0, side + 1, side + 1);
+        let region = CreateEllipticRgn(left, top, left + side + 1, top + side + 1);
         if SetWindowRgn(hwnd, Some(region), true) == 0 {
             log::warn!("daire bölgesi uygulanamadı");
         }
     }
+    log::debug!("pencere: istemci ofseti {offset:?}, istemci {client:?}, daire {side}px");
     Applied::Now
 }
 
