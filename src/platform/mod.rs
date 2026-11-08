@@ -68,10 +68,29 @@ pub fn settings_window_options(bounds: WindowBounds) -> WindowOptions {
 /// Widget'ın ekrandaki sınırları (mantıksal piksel), ayarlardaki konuma göre.
 pub fn widget_bounds(cx: &App, appearance: &AppearanceConfig) -> Bounds<Pixels> {
     let side = px(appearance.size.pixels());
-    let Some(display) = cx.primary_display().map(|d| d.bounds()) else {
+    let displays: Vec<_> = cx.displays().iter().map(|d| d.bounds()).collect();
+    // Sürüklenmiş konum hangi ekrandaysa o; o ekran artık yoksa birincil ekran.
+    let custom_display =
+        appearance.custom.filter(|_| appearance.position == Position::Custom).and_then(|[x, y]| {
+            let center = point(px(x as f32) + side / 2.0, px(y as f32) + side / 2.0);
+            displays.iter().copied().find(|d| d.contains(&center))
+        });
+    let Some(display) = custom_display.or_else(|| cx.primary_display().map(|d| d.bounds())) else {
         return Bounds::centered(None, size(side, side), cx);
     };
-    Bounds { origin: widget_origin(display, side, appearance), size: size(side, side) }
+    let mut appearance = appearance.clone();
+    if custom_display.is_none() && appearance.position == Position::Custom {
+        appearance.position = Position::Center;
+    }
+    Bounds { origin: widget_origin(display, side, &appearance), size: size(side, side) }
+}
+
+/// Pencere, ayarlardaki konumdan kullanıcı tarafından mı taşındı? Pencere
+/// yöneticilerinin birkaç piksellik düzeltmeleri sayılmaz.
+pub fn moved_by_user(expected: Point<Pixels>, actual: Point<Pixels>) -> bool {
+    const TOLERANCE: f32 = 8.0;
+    (f32::from(expected.x) - f32::from(actual.x)).abs() > TOLERANCE
+        || (f32::from(expected.y) - f32::from(actual.y)).abs() > TOLERANCE
 }
 
 fn widget_origin(
@@ -92,6 +111,16 @@ fn widget_origin(
         Position::TopRight => point(right, top),
         Position::BottomLeft => point(left, bottom),
         Position::BottomRight => point(right, bottom),
+        // Ekranın dışına taşmasın (çözünürlük değişmiş olabilir).
+        Position::Custom => {
+            let [x, y] = appearance.custom.unwrap_or_default();
+            let max_x = display.origin.x + display.size.width - side;
+            let max_y = display.origin.y + display.size.height - side;
+            point(
+                px(x as f32).clamp(display.origin.x, max_x.max(display.origin.x)),
+                px(y as f32).clamp(display.origin.y, max_y.max(display.origin.y)),
+            )
+        }
     }
 }
 
@@ -116,5 +145,31 @@ mod tests {
         assert_eq!(at(Position::TopRight), point(px(4256.0), px(24.0)));
         assert_eq!(at(Position::BottomRight), point(px(4256.0), px(1216.0)));
         assert_eq!(at(Position::Center), point(px(3100.0), px(620.0)));
+    }
+
+    #[test]
+    fn custom_position_is_kept_on_screen() {
+        let display =
+            Bounds { origin: point(px(0.0), px(0.0)), size: size(px(1920.0), px(1080.0)) };
+        let at = |custom| {
+            widget_origin(
+                display,
+                px(200.0),
+                &AppearanceConfig {
+                    position: Position::Custom,
+                    custom: Some(custom),
+                    ..Default::default()
+                },
+            )
+        };
+        assert_eq!(at([300, 400]), point(px(300.0), px(400.0)));
+        assert_eq!(at([1900, -50]), point(px(1720.0), px(0.0)));
+    }
+
+    #[test]
+    fn small_adjustments_are_not_user_moves() {
+        let a = point(px(776.0), px(24.0));
+        assert!(!moved_by_user(a, point(px(778.0), px(24.0))));
+        assert!(moved_by_user(a, point(px(500.0), px(300.0))));
     }
 }

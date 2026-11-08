@@ -4206,6 +4206,8 @@ dependencies = [
  "thiserror 2.0.21",
  "tiny-skia",
  "toml 1.2.1+spec-1.1.0",
+ "windows 0.62.2",
+ "windows-registry",
  "x11rb",
 ]
 

@@ -88,10 +88,17 @@ pub enum Bind {
 /// Soketi dinlemeye başlar. Bağlantılar ayrı bir iş parçacığında işlenir.
 pub fn listen() -> io::Result<Bind> {
     let name = socket_name().to_ns_name::<GenericNamespaced>()?;
-    let listener = match ListenerOptions::new().name(name).create_sync() {
+    let listener = match ListenerOptions::new().name(name.clone()).create_sync() {
         Ok(listener) => listener,
-        Err(e) if e.kind() == io::ErrorKind::AddrInUse => return Ok(Bind::AlreadyRunning),
-        Err(e) => return Err(e),
+        // Linux'ta `AddrInUse`, Windows'ta (ilk boru örneği bayrağı yüzünden)
+        // `PermissionDenied` gelir. Platformdan bağımsız olmak için: soket
+        // açılamıyor ama bağlanılabiliyorsa başka bir örnek çalışıyordur.
+        Err(e) => {
+            return match LocalSocketStream::connect(name) {
+                Ok(_) => Ok(Bind::AlreadyRunning),
+                Err(_) => Err(e),
+            };
+        }
     };
     let (tx, rx) = async_channel::unbounded();
     let status = Status::default();

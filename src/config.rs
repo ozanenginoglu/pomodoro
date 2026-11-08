@@ -101,7 +101,8 @@ impl Size {
 }
 
 /// Widget'ın ekrandaki yeri. Wayland'de (layer-shell) ve X11'de açılışta
-/// uygulanır; xmonad gibi pencere yöneticilerinde sonradan taşınabilir.
+/// uygulanır. Widget sürüklenince (Windows'ta doğrudan, xmonad'da mod+sürükle)
+/// `Custom` olur ve `AppearanceConfig::custom` konumu hatırlanır.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Position {
@@ -111,6 +112,7 @@ pub enum Position {
     TopRight,
     BottomLeft,
     BottomRight,
+    Custom,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -120,6 +122,9 @@ pub struct AppearanceConfig {
     pub position: Position,
     /// Köşeye konumlandırırken ekran kenarından uzaklık (mantıksal piksel).
     pub margin: u32,
+    /// Sürüklenerek bırakılan konum (sol üst köşe, mantıksal piksel, tüm
+    /// ekranların ortak koordinatlarında). Yalnızca `position = "custom"` iken kullanılır.
+    pub custom: Option<[i32; 2]>,
     /// Diğer pencerelerin üstünde dursun. Kapalıyken Wayland'de masaüstü
     /// katmanına (pencerelerin altına) yerleşir.
     pub always_on_top: bool,
@@ -131,6 +136,7 @@ impl Default for AppearanceConfig {
             size: Size::default(),
             position: Position::default(),
             margin: 24,
+            custom: None,
             always_on_top: true,
         }
     }
@@ -166,6 +172,10 @@ impl Config {
         clamp(&mut m.critical_minutes, limits::CRITICAL);
         m.critical_minutes = m.critical_minutes.min(m.warning_minutes);
         clamp(&mut self.appearance.margin, limits::MARGIN);
+        let a = &mut self.appearance;
+        if a.position == Position::Custom && a.custom.is_none() {
+            a.position = Position::default();
+        }
         self
     }
 

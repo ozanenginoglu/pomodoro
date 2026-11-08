@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use gpui::{
     App, Context, Div, Entity, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyBinding,
     KeyDownEvent, Keystroke, MouseButton, MouseMoveEvent, ParentElement, Pixels, Point, Render,
-    SharedString, Stateful, Styled, Subscription, Task, Window, WindowHandle, actions, div,
-    prelude::*, px, size, svg,
+    SharedString, Stateful, Styled, Subscription, Task, Window, WindowControlArea, WindowHandle,
+    actions, div, prelude::*, px, size, svg,
 };
 
 use super::{
@@ -17,7 +17,7 @@ use super::{
 use crate::{
     alert::{self, Alert, Chime},
     assets::icon,
-    config::{AppearanceConfig, Config, NotificationConfig},
+    config::{AppearanceConfig, Config, NotificationConfig, Position},
     ipc::{self, Command},
     meeting::{self, Meeting, MeetingDisplay, MeetingSettings, Stage},
     platform::{self, Applied},
@@ -118,6 +118,8 @@ pub struct Widget {
     appearance: AppearanceConfig,
     /// Wayland'de konum ancak yeniden açılışta değişir; sayaçlar dururken yapılır.
     pending_restart: bool,
+    /// Kullanıcı widget'ı taşıyınca yeni konumu biraz bekleyip kaydeder.
+    save_position: Option<Task<()>>,
     /// Toplantı süresi/saati girişi.
     input: String,
     input_error: Option<SharedString>,
@@ -133,7 +135,7 @@ pub struct Widget {
     ring: SharedRingCache,
     /// `pomodoro status` için paylaşılan durum satırı.
     status: ipc::Status,
-    _config_subscription: Subscription,
+    _subscriptions: [Subscription; 2],
     _commands: Task<()>,
 }
 
@@ -161,6 +163,9 @@ impl Widget {
             let config = config.read(cx).clone();
             this.apply_config(&config, window, cx);
         });
+        // Widget sürüklenince (Windows) ya da pencere yöneticisiyle taşınınca konumu hatırla.
+        let bounds_subscription =
+            cx.observe_window_bounds(window, |this, window, cx| this.window_moved(window, cx));
         // `pomodoro toggle` vb. komut satırı komutları.
         let command_task = cx.spawn(async move |this, cx| {
             while let Ok(command) = commands.recv().await {
@@ -180,6 +185,7 @@ impl Widget {
             notifications: c.notifications.clone(),
             appearance: c.appearance.clone(),
             pending_restart: false,
+            save_position: None,
             input: String::new(),
             input_error: None,
             focus,
@@ -189,7 +195,7 @@ impl Widget {
             ticker: None,
             ring: SharedRingCache::default(),
             status,
-            _config_subscription: subscription,
+            _subscriptions: [subscription, bounds_subscription],
             _commands: command_task,
         };
         widget.publish_status();
@@ -274,6 +280,38 @@ impl Widget {
         }
         self.appearance = appearance.clone();
         self.changed(cx);
+    }
+
+    /// Pencere ayarlardaki yerinden taşındıysa, hareket bitince yeni konumu
+    /// `custom` olarak kaydeder. Kendi yaptığımız taşımalar beklenen konuma
+    /// denk geldiği için sayılmaz.
+    fn window_moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !platform::remembers_position(cx) {
+            return;
+        }
+        let expected = platform::widget_bounds(cx, &self.appearance).origin;
+        let actual = window.bounds().origin;
+        if !platform::moved_by_user(expected, actual) {
+            self.save_position = None;
+            return;
+        }
+        let config = self.config.clone();
+        self.save_position = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(500)).await;
+            let position = [f32::from(actual.x).round() as i32, f32::from(actual.y).round() as i32];
+            let _ = this.update(cx, |this, cx| {
+                this.save_position = None;
+                // Yeni konum zaten uygulanmış; `apply_config` pencereyi geri taşımasın.
+                this.appearance.position = Position::Custom;
+                this.appearance.custom = Some(position);
+                config.update(cx, |config, cx| {
+                    config.appearance.position = Position::Custom;
+                    config.appearance.custom = Some(position);
+                    config.save();
+                    cx.notify();
+                });
+            });
+        }));
     }
 
     /// Hiçbir sayaç çalışmıyor ve yarıda kalmış bir evre yok.
@@ -832,6 +870,8 @@ fn icon_button(
         .justify_center()
         .rounded_full()
         .cursor_pointer()
+        // Sürükleme alanının (Windows) tıklamayı yutmaması için.
+        .occlude()
         .hover(|s| s.bg(theme::button_hover()))
         .child(svg().path(path).size(px(size)).text_color(color))
 }
@@ -874,6 +914,8 @@ impl Render for Widget {
         div()
             .id("root")
             .size_full()
+            // Windows: dairenin boş alanı pencereyi sürükler (düğmeler hariç).
+            .when(platform::DRAG_TO_MOVE, |d| d.window_control_area(WindowControlArea::Drag))
             .track_focus(&self.focus)
             .key_context(self.key_context())
             .on_action(cx.listener(|this, _: &ToggleTimer, _, cx| this.toggle(cx)))

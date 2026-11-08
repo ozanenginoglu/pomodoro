@@ -32,6 +32,14 @@ x11rb = "0.13"
 
 [target.'cfg(windows)'.dependencies]
 gpui_platform = { version = "=0.3.11", package = "gpui-pre-platform" }
+# GPUI ile aynı sürüm: daire bölgesi, üstte durma ve konum.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# Oturum açılınca başlatma (HKCU\...\Run).
+windows-registry = "0.6"
 
 [profile.release]
 lto = "thin"

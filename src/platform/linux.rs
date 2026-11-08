@@ -106,14 +106,20 @@ pub fn open_settings<V: 'static + Render>(
 }
 
 fn layer_shell_options(appearance: &AppearanceConfig) -> LayerShellOptions {
-    let anchor = match appearance.position {
-        Position::Center => Anchor::empty(),
-        Position::TopLeft => Anchor::TOP | Anchor::LEFT,
-        Position::TopRight => Anchor::TOP | Anchor::RIGHT,
-        Position::BottomLeft => Anchor::BOTTOM | Anchor::LEFT,
-        Position::BottomRight => Anchor::BOTTOM | Anchor::RIGHT,
-    };
     let m = px(appearance.margin as f32);
+    let (anchor, margin) = match (appearance.position, appearance.custom) {
+        (Position::Center, _) => (Anchor::empty(), (m, m, m, m)),
+        (Position::TopLeft, _) => (Anchor::TOP | Anchor::LEFT, (m, m, m, m)),
+        (Position::TopRight, _) => (Anchor::TOP | Anchor::RIGHT, (m, m, m, m)),
+        (Position::BottomLeft, _) => (Anchor::BOTTOM | Anchor::LEFT, (m, m, m, m)),
+        (Position::BottomRight, _) => (Anchor::BOTTOM | Anchor::RIGHT, (m, m, m, m)),
+        // Sol üst köşeden uzaklık olarak (çoklu ekranda birincil ekrana göre).
+        (Position::Custom, Some([x, y])) => (
+            Anchor::TOP | Anchor::LEFT,
+            (px(y.max(0) as f32), px(0.0), px(0.0), px(x.max(0) as f32)),
+        ),
+        (Position::Custom, None) => (Anchor::empty(), (m, m, m, m)),
+    };
     LayerShellOptions {
         namespace: APP_ID.to_string(),
         // "Üstte dur" kapalıyken pencerelerin altında, masaüstünde durur.
@@ -121,11 +127,21 @@ fn layer_shell_options(appearance: &AppearanceConfig) -> LayerShellOptions {
         anchor,
         exclusive_zone: None,
         exclusive_edge: None,
-        margin: Some((m, m, m, m)),
+        margin: Some(margin),
         // Toplantı süresi yazılabilsin diye tıklanınca klavye odağı alır.
         keyboard_interactivity: KeyboardInteractivity::OnDemand,
     }
 }
+
+/// Pencere yöneticisiyle taşınan konum hatırlanabilir mi? Wayland'de
+/// istemci kendi konumunu bilemez.
+pub fn remembers_position(cx: &App) -> bool {
+    !is_wayland(cx)
+}
+
+/// Widget'ın arka planı sürükleme alanı mı? Linux'ta pencere yöneticisi
+/// taşır (xmonad: mod + sürükle); tıklamalar widget'a kalır.
+pub const DRAG_TO_MOVE: bool = false;
 
 /// Görünüm ayarları değişince çağrılır.
 pub fn apply_appearance(window: &mut Window, cx: &App, appearance: &AppearanceConfig) -> Applied {
@@ -232,4 +248,14 @@ pub fn pointer_position(window: &Window) -> Option<Point<Pixels>> {
         )
     })
     .flatten()
+}
+
+/// Linux'ta açılışta başlatma pencere yöneticisinin işi (xmonad `spawnOnce`,
+/// Hyprland `exec-once` …); ayarlarda gösterilmez.
+pub fn autostart() -> Option<bool> {
+    None
+}
+
+pub fn set_autostart(_enabled: bool) -> anyhow::Result<()> {
+    anyhow::bail!("Linux'ta desteklenmiyor")
 }

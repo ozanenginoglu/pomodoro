@@ -21,7 +21,8 @@ actions!(settings, [CloseSettings]);
 
 const CONTEXT: &str = "Settings";
 const WIDTH: f32 = 320.0;
-const HEIGHT: f32 = 624.0;
+/// Windows'ta fazladan "Oturum açılınca başlat" satırı var.
+const HEIGHT: f32 = if cfg!(windows) { 658.0 } else { 624.0 };
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("escape", CloseSettings, Some(CONTEXT))]);
@@ -136,24 +137,29 @@ impl SettingsPanel {
         field: fn(&mut Config) -> &mut bool,
         cx: &mut Context<Self>,
     ) -> Div {
-        let knob = div().size(px(16.0)).rounded_full().bg(theme::text());
-        row(label).child(
-            div()
-                .id(key)
-                .w(px(38.0))
-                .h(px(22.0))
-                .p(px(3.0))
-                .rounded_full()
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .when(on, |d| d.justify_end().bg(theme::accent()))
-                .when(!on, |d| d.justify_start().bg(theme::button_hover()))
-                .on_click(
-                    cx.listener(move |this, _, _, cx| this.set(cx, |c| *field(c) = !*field(c))),
-                )
-                .child(knob),
+        switch(
+            key,
+            label,
+            on,
+            cx.listener(move |this, _, _, cx| this.set(cx, |c| *field(c) = !*field(c))),
         )
+    }
+
+    /// Oturum açılınca başlatma (yalnızca Windows). Ayar dosyasında değil,
+    /// sistemde (kayıt defteri) tutulur.
+    fn autostart_row(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let on = platform::autostart()?;
+        Some(switch(
+            "autostart",
+            "Oturum açılınca başlat",
+            on,
+            cx.listener(move |_, _, _, cx| {
+                if let Err(e) = platform::set_autostart(!on) {
+                    log::error!("açılışta başlatma ayarlanamadı: {e}");
+                }
+                cx.notify();
+            }),
+        ))
     }
 
     fn segmented<T: Copy + PartialEq + 'static>(
@@ -198,6 +204,31 @@ impl SettingsPanel {
                 })),
         )
     }
+}
+
+/// Açma/kapama anahtarı satırı.
+fn switch(
+    key: &'static str,
+    label: &'static str,
+    on: bool,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> Div {
+    let knob = div().size(px(16.0)).rounded_full().bg(theme::text());
+    row(label).child(
+        div()
+            .id(key)
+            .w(px(38.0))
+            .h(px(22.0))
+            .p(px(3.0))
+            .rounded_full()
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .when(on, |d| d.justify_end().bg(theme::accent()))
+            .when(!on, |d| d.justify_start().bg(theme::button_hover()))
+            .on_click(on_click)
+            .child(knob),
+    )
 }
 
 /// Seçim düğmesinin içeriği.
@@ -404,7 +435,8 @@ impl Render for SettingsPanel {
                         c.appearance.always_on_top,
                         |c| &mut c.appearance.always_on_top,
                         cx,
-                    )),
+                    ))
+                    .children(self.autostart_row(cx)),
             )
     }
 }
