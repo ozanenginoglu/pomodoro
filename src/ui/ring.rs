@@ -1,0 +1,176 @@
+//! Daire ve ilerleme halkası.
+//!
+//! GPUI'nin vektör yolu çizicisi kenarları yumuşatmadığı için daireyi, izi ve
+//! yayı `tiny-skia` ile ekranın gerçek piksel çözünürlüğünde (HiDPI dahil)
+//! kenar yumuşatmalı olarak çizip görüntü olarak basıyoruz. Görüntü yalnızca
+//! boyut, renk ya da halka oranı değiştiğinde yeniden üretilir (en fazla
+//! saniyede bir); hover animasyonu gibi diğer yeniden çizimler önbellekten gelir.
+
+use std::{cell::RefCell, f32::consts::TAU, rc::Rc, sync::Arc};
+
+use gpui::{Corners, Hsla, IntoElement, RenderImage, Styled, Window, canvas, swap_rgba_pa_to_bgra};
+use image::{Frame, RgbaImage};
+use smallvec::smallvec;
+use tiny_skia::{FillRule, LineCap, Paint, PathBuilder, Pixmap, Stroke, Transform};
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RingStyle {
+    /// Halka kalınlığı (mantıksal piksel).
+    pub width: f32,
+    pub surface: Hsla,
+    pub track: Hsla,
+    pub color: Hsla,
+}
+
+/// Bir önceki görüntüyü saklar; anahtar değişmedikçe yeniden çizmez.
+#[derive(Default)]
+pub struct RingCache {
+    key: Option<Key>,
+    image: Option<Arc<RenderImage>>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct Key {
+    pixels: u32,
+    /// Oran 1/4096 hassasiyetle; 200 px'lik dairede bir pikselden çok daha ince.
+    fraction: u32,
+    style: [u32; 4],
+}
+
+pub type SharedRingCache = Rc<RefCell<RingCache>>;
+
+/// `fraction` (0..=1) kadar dolu, saat 12'den saat yönünde ilerleyen halka
+/// ve altındaki dolu daire. Bulunduğu alanı kaplar.
+pub fn ring(cache: SharedRingCache, fraction: f32, style: RingStyle) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let scale = window.scale_factor();
+            let pixels = (f32::from(bounds.size.width.min(bounds.size.height)) * scale).round() as u32;
+            if pixels == 0 {
+                return;
+            }
+            let image = cache.borrow_mut().get(window, pixels, scale, fraction, style);
+            if let Some(image) = image {
+                let _ = window.paint_image(bounds, bounds, Corners::default(), image, 0, false);
+            }
+        },
+    )
+    .size_full()
+}
+
+impl RingCache {
+    fn get(
+        &mut self,
+        window: &mut Window,
+        pixels: u32,
+        scale: f32,
+        fraction: f32,
+        style: RingStyle,
+    ) -> Option<Arc<RenderImage>> {
+        let fraction = fraction.clamp(0.0, 1.0);
+        let key = Key {
+            pixels,
+            fraction: (fraction * 4096.0).round() as u32,
+            style: style_key(style),
+        };
+
+        if self.key != Some(key) {
+            let image = rasterize(pixels, scale, fraction, style)?;
+            // Eski görüntüyü GPU atlasından çıkar, yoksa her saniye birikir.
+            if let Some(old) = self.image.replace(image) {
+                let _ = window.drop_image(old);
+            }
+            self.key = Some(key);
+        }
+        self.image.clone()
+    }
+}
+
+fn style_key(style: RingStyle) -> [u32; 4] {
+    let pack = |c: Hsla| {
+        let c = c.to_rgb();
+        u32::from_be_bytes([c.r, c.g, c.b, c.a].map(|v| (v * 255.0).round() as u8))
+    };
+    [style.width.to_bits(), pack(style.surface), pack(style.track), pack(style.color)]
+}
+
+fn paint(color: Hsla) -> Paint<'static> {
+    let c = color.to_rgb();
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(
+        (c.r * 255.0).round() as u8,
+        (c.g * 255.0).round() as u8,
+        (c.b * 255.0).round() as u8,
+        (c.a * 255.0).round() as u8,
+    );
+    paint.anti_alias = true;
+    paint
+}
+
+fn rasterize(pixels: u32, scale: f32, fraction: f32, style: RingStyle) -> Option<Arc<RenderImage>> {
+    let mut pixmap = Pixmap::new(pixels, pixels)?;
+    let size = pixels as f32;
+    let center = size / 2.0;
+    let width = style.width * scale;
+    // Dış kenar pikselin yarısı kadar içeride: kenar yumuşatması kesilmesin.
+    let outer = center - 0.5;
+    let ring_radius = outer - width / 2.0;
+    let identity = Transform::identity();
+
+    let disc = PathBuilder::from_circle(center, center, outer)?;
+    pixmap.fill_path(&disc, &paint(style.surface), FillRule::Winding, identity, None);
+
+    let track = PathBuilder::from_circle(center, center, ring_radius)?;
+    let stroke = Stroke { width, ..Stroke::default() };
+    pixmap.stroke_path(&track, &paint(style.track), &stroke, identity, None);
+
+    if fraction > 0.0 {
+        let full = fraction >= 0.9995;
+        let stroke = Stroke {
+            width,
+            line_cap: if full { LineCap::Butt } else { LineCap::Round },
+            ..Stroke::default()
+        };
+        let arc = if full {
+            Some(track)
+        } else {
+            arc_path(center, center, ring_radius, fraction)
+        };
+        if let Some(arc) = arc {
+            pixmap.stroke_path(&arc, &paint(style.color), &stroke, identity, None);
+        }
+    }
+
+    // tiny-skia: önçarpımlı RGBA → GPUI: düz alfa BGRA.
+    let mut data = pixmap.take();
+    for pixel in data.as_chunks_mut::<4>().0 {
+        swap_rgba_pa_to_bgra(pixel);
+    }
+    let buffer = RgbaImage::from_raw(pixels, pixels, data)?;
+    Some(Arc::new(RenderImage::new(smallvec![Frame::new(buffer)])))
+}
+
+/// Saat 12'den saat yönünde `fraction` turluk yay; ≤90°'lik kübik Bézier
+/// parçalarıyla (hata < 0.03 px).
+fn arc_path(cx: f32, cy: f32, r: f32, fraction: f32) -> Option<tiny_skia::Path> {
+    // Açı saat 12'den saat yönünde; ekran y ekseni aşağı baktığı için y = cy - r·cos(θ).
+    let at = |theta: f32| (cx + r * theta.sin(), cy - r * theta.cos());
+    let total = fraction * TAU;
+    let segments = (total / (TAU / 4.0)).ceil().max(1.0) as usize;
+    let step = total / segments as f32;
+    let k = 4.0 / 3.0 * (step / 4.0).tan() * r;
+
+    let mut builder = PathBuilder::new();
+    let (x0, y0) = at(0.0);
+    builder.move_to(x0, y0);
+    for i in 0..segments {
+        let (a0, a1) = (i as f32 * step, (i + 1) as f32 * step);
+        let (p0, p1) = (at(a0), at(a1));
+        // Teğet yönü (saat yönünde): (cos θ, sin θ).
+        let c0 = (p0.0 + k * a0.cos(), p0.1 + k * a0.sin());
+        let c1 = (p1.0 - k * a1.cos(), p1.1 - k * a1.sin());
+        builder.cubic_to(c0.0, c0.1, c1.0, c1.1, p1.0, p1.1);
+    }
+    builder.finish()
+}

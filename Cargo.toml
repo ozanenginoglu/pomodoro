@@ -1,0 +1,36 @@
+[package]
+name = "pomodoro"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+raw-window-handle = "0.6"
+env_logger = "0.11.11"
+gpui = { version = "=0.3.11", package = "gpui-pre" }
+log = "0.4.35"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+thiserror = "2.0.21"
+tiny-skia = "0.11"
+smallvec = { version = "1", default-features = false }
+image = { version = "0.25", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.2.1"
+directories = "6.0.0"
+rodio = { version = "0.23", default-features = false, features = ["playback"] }
+notify-rust = "4.19"
+interprocess = "2.4"
+async-channel = "2"
+
+# X11 arka ucu gpui_platform'da varsayılan olarak kapalı; Linux'ta açıyoruz.
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_platform = { version = "=0.3.11", package = "gpui-pre-platform", features = ["x11"] }
+# GPUI'nin X11 "leave" olayı xmonad altında güvenilir gelmiyor; imleci doğrudan sorguluyoruz.
+x11rb = "0.13"
+
+[target.'cfg(windows)'.dependencies]
+gpui_platform = { version = "=0.3.11", package = "gpui-pre-platform" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true

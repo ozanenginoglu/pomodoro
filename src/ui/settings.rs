@@ -1,0 +1,299 @@
+//! Küçük, başlık çubuğu olmayan ayarlar paneli. Her değişiklik anında
+//! kaydedilir ve widget'a uygulanır; ayrı bir "Kaydet" düğmesi yoktur.
+//! `Esc` ile ya da panel odağı kaybedince kapanır.
+
+use std::ops::RangeInclusive;
+
+use gpui::{
+    App, AppContext, Bounds, Context, Div, ElementId, Entity, FocusHandle, Hsla, KeyBinding,
+    ParentElement, Render, SharedString, Styled, Subscription, Window, WindowBounds, WindowHandle,
+    actions, div, prelude::*, px, size, svg,
+};
+
+use super::theme;
+use crate::{
+    assets::icon,
+    config::{Config, Display, Size, limits},
+    platform,
+};
+
+actions!(settings, [CloseSettings]);
+
+const CONTEXT: &str = "Settings";
+const WIDTH: f32 = 320.0;
+const HEIGHT: f32 = 556.0;
+
+pub fn bind_keys(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new("escape", CloseSettings, Some(CONTEXT))]);
+}
+
+/// Paneli açar; zaten açıksa öne getirir.
+pub fn open(
+    existing: Option<WindowHandle<SettingsPanel>>,
+    config: Entity<Config>,
+    cx: &mut App,
+) -> Option<WindowHandle<SettingsPanel>> {
+    if let Some(handle) = existing
+        && handle.update(cx, |_, window, _| window.activate_window()).is_ok()
+    {
+        return Some(handle);
+    }
+    let bounds = Bounds::centered(None, size(px(WIDTH), px(HEIGHT)), cx);
+    let options = platform::settings_window_options(WindowBounds::Windowed(bounds));
+    cx.open_window(options, |window, cx| cx.new(|cx| SettingsPanel::new(config, window, cx)))
+        .inspect_err(|e| log::error!("ayarlar penceresi açılamadı: {e}"))
+        .ok()
+}
+
+pub struct SettingsPanel {
+    config: Entity<Config>,
+    focus: FocusHandle,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl SettingsPanel {
+    fn new(config: Entity<Config>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+        let subscriptions = vec![
+            cx.observe(&config, |_, _, cx| cx.notify()),
+            // Panelin dışına tıklanınca (odak gidince) kapan.
+            cx.observe_window_activation(window, |_, window, _| {
+                if !window.is_window_active() {
+                    window.remove_window();
+                }
+            }),
+        ];
+        Self { config, focus, _subscriptions: subscriptions }
+    }
+
+    /// Ayarı değiştirir, sınırlara kırpar, kaydeder ve widget'a haber verir.
+    fn set(&mut self, cx: &mut Context<Self>, change: impl FnOnce(&mut Config)) {
+        self.config.update(cx, |config, cx| {
+            let mut next = config.clone();
+            change(&mut next);
+            let next = next.normalized();
+            if next != *config {
+                *config = next;
+                config.save();
+                cx.notify();
+            }
+        });
+    }
+
+    fn stepper(&self, spec: Stepper, value: u32, cx: &mut Context<Self>) -> Div {
+        let Stepper { key, label, unit, range, field } = spec;
+        let (min, max) = (*range.start(), *range.end());
+        let button = |id: usize, text: &'static str, enabled: bool, delta: i64| {
+            div()
+                .id(ElementId::from((key, id)))
+                .size(px(26.0))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(16.0))
+                .text_color(if enabled { theme::text() } else { theme::ring_track() })
+                .when(enabled, |d| {
+                    d.cursor_pointer().hover(|s| s.bg(theme::button_hover())).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            this.set(cx, |c| {
+                                let v = field(c);
+                                *v = (i64::from(*v) + delta).clamp(min.into(), max.into()) as u32;
+                            })
+                        },
+                    ))
+                })
+                .child(text)
+        };
+        // Uzun süreler için büyük adım: 60 dakikanın üstünde 5'er dakika.
+        let step = if unit == "dk" && value >= 60 { 5 } else { 1 };
+        row(label).child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .child(button(0, "−", value > min, -step))
+                .child(
+                    div()
+                        .w(px(58.0))
+                        .flex()
+                        .justify_center()
+                        .text_color(theme::text())
+                        .child(SharedString::from(format!("{value} {unit}"))),
+                )
+                .child(button(1, "+", value < max, step)),
+        )
+    }
+
+    fn toggle(
+        &self,
+        key: &'static str,
+        label: &'static str,
+        on: bool,
+        field: fn(&mut Config) -> &mut bool,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let knob = div().size(px(16.0)).rounded_full().bg(theme::text());
+        row(label).child(
+            div()
+                .id(key)
+                .w(px(38.0))
+                .h(px(22.0))
+                .p(px(3.0))
+                .rounded_full()
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .when(on, |d| d.justify_end().bg(theme::accent()))
+                .when(!on, |d| d.justify_start().bg(theme::button_hover()))
+                .on_click(cx.listener(move |this, _, _, cx| this.set(cx, |c| *field(c) = !*field(c))))
+                .child(knob),
+        )
+    }
+
+    fn segmented<T: Copy + PartialEq + 'static>(
+        &self,
+        key: &'static str,
+        label: &'static str,
+        options: &[(T, &'static str)],
+        selected: T,
+        apply: fn(&mut Config, T),
+        cx: &mut Context<Self>,
+    ) -> Div {
+        row(label).child(
+            div().flex().p(px(2.0)).gap(px(2.0)).rounded(px(8.0)).bg(theme::button_hover()).children(
+                options.iter().enumerate().map(|(i, &(value, text))| {
+                    let active = value == selected;
+                    div()
+                        .id(ElementId::from((key, i)))
+                        .px(px(9.0))
+                        .py(px(3.0))
+                        .rounded(px(6.0))
+                        .cursor_pointer()
+                        .text_color(if active { theme::text() } else { theme::muted() })
+                        .when(active, |d| d.bg(theme::surface()))
+                        .on_click(cx.listener(move |this, _, _, cx| this.set(cx, |c| apply(c, value))))
+                        .child(text)
+                }),
+            ),
+        )
+    }
+}
+
+/// Bir "−  25 dk  +" satırının tanımı.
+struct Stepper {
+    key: &'static str,
+    label: &'static str,
+    unit: &'static str,
+    range: RangeInclusive<u32>,
+    field: fn(&mut Config) -> &mut u32,
+}
+
+const fn stepper(
+    key: &'static str,
+    label: &'static str,
+    unit: &'static str,
+    range: RangeInclusive<u32>,
+    field: fn(&mut Config) -> &mut u32,
+) -> Stepper {
+    Stepper { key, label, unit, range, field }
+}
+
+fn row(label: &'static str) -> Div {
+    div()
+        .h(px(34.0))
+        .flex()
+        .items_center()
+        .justify_between()
+        .child(div().text_color(theme::text()).child(label))
+}
+
+fn section(title: &'static str) -> Div {
+    div()
+        .pt(px(14.0))
+        .pb(px(2.0))
+        .text_size(px(11.0))
+        .text_color(theme::muted())
+        .child(title)
+}
+
+fn close_button(cx: &mut Context<SettingsPanel>) -> impl IntoElement {
+    div()
+        .id("close")
+        .size(px(28.0))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::button_hover()))
+        .on_click(cx.listener(|_, _, window, _| window.remove_window()))
+        .child(svg().path(icon::CLOSE).size(px(14.0)).text_color(theme::muted()))
+}
+
+impl Render for SettingsPanel {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let c = self.config.read(cx).clone();
+        let (p, m, n) = (&c.pomodoro, &c.meeting, &c.notifications);
+        let border: Hsla = theme::ring_track();
+
+        div()
+            .track_focus(&self.focus)
+            .key_context(CONTEXT)
+            .on_action(cx.listener(|_, _: &CloseSettings, window, _| window.remove_window()))
+            .size_full()
+            .p(px(1.0))
+            .child(
+                div()
+                    .size_full()
+                    .rounded(px(16.0))
+                    .border_1()
+                    .border_color(border)
+                    .bg(theme::surface())
+                    .px(px(20.0))
+                    .py(px(14.0))
+                    .text_size(px(13.0))
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(div().text_size(px(16.0)).text_color(theme::text()).child("Ayarlar"))
+                            .child(close_button(cx)),
+                    )
+                    .child(section("POMODORO"))
+                    .child(self.stepper(stepper("work", "Çalışma", "dk", limits::WORK, |c| &mut c.pomodoro.work_minutes), p.work_minutes, cx))
+                    .child(self.stepper(stepper("short", "Kısa mola", "dk", limits::BREAK, |c| &mut c.pomodoro.short_break_minutes), p.short_break_minutes, cx))
+                    .child(self.stepper(stepper("long", "Uzun mola", "dk", limits::BREAK, |c| &mut c.pomodoro.long_break_minutes), p.long_break_minutes, cx))
+                    .child(self.stepper(stepper("rounds", "Uzun mola aralığı", "tur", limits::ROUNDS, |c| &mut c.pomodoro.rounds_before_long_break), p.rounds_before_long_break, cx))
+                    .child(self.toggle("auto-break", "Molayı kendiliğinden başlat", p.auto_start_breaks, |c| &mut c.pomodoro.auto_start_breaks, cx))
+                    .child(self.toggle("auto-work", "Çalışmayı kendiliğinden başlat", p.auto_start_work, |c| &mut c.pomodoro.auto_start_work, cx))
+                    .child(section("TOPLANTI"))
+                    .child(self.segmented(
+                        "display",
+                        "Gösterim",
+                        &[(Display::Remaining, "Kalan"), (Display::EndTime, "Bitiş"), (Display::Both, "İkisi")],
+                        m.display,
+                        |c, v| c.meeting.display = v,
+                        cx,
+                    ))
+                    .child(self.stepper(stepper("warn", "Uyarı", "dk", limits::WARNING, |c| &mut c.meeting.warning_minutes), m.warning_minutes, cx))
+                    .child(self.stepper(stepper("crit", "Son uyarı", "dk", limits::CRITICAL, |c| &mut c.meeting.critical_minutes), m.critical_minutes, cx))
+                    .child(section("BİLDİRİM"))
+                    .child(self.toggle("notify", "Bildirim", n.enabled, |c| &mut c.notifications.enabled, cx))
+                    .child(self.toggle("sound", "Ses", n.sound, |c| &mut c.notifications.sound, cx))
+                    .child(section("GÖRÜNÜM"))
+                    .child(self.segmented(
+                        "size",
+                        "Boyut",
+                        &[(Size::Small, "S"), (Size::Medium, "M"), (Size::Large, "L")],
+                        c.appearance.size,
+                        |c, v| c.appearance.size = v,
+                        cx,
+                    )),
+            )
+    }
+}
