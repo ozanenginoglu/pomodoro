@@ -8,7 +8,10 @@
 
 use std::{cell::RefCell, f32::consts::TAU, rc::Rc, sync::Arc};
 
-use gpui::{Corners, Hsla, IntoElement, RenderImage, Styled, Window, canvas, swap_rgba_pa_to_bgra};
+use gpui::{
+    Bounds, Corners, Hsla, IntoElement, RenderImage, Styled, Window, canvas, size,
+    swap_rgba_pa_to_bgra,
+};
 use image::{Frame, RgbaImage};
 use smallvec::smallvec;
 use tiny_skia::{FillRule, LineCap, Paint, PathBuilder, Pixmap, Stroke, Transform};
@@ -46,7 +49,11 @@ pub fn ring(cache: SharedRingCache, fraction: f32, style: RingStyle) -> impl Int
         |_, _, _| {},
         move |bounds, _, window, _| {
             let scale = window.scale_factor();
-            let pixels = (f32::from(bounds.size.width.min(bounds.size.height)) * scale).round() as u32;
+            // Pencere kare değilse (ör. döşemeli bir pencere yöneticisi büyüttüyse)
+            // daire, ortadaki karenin içine çizilir; elipse dönüşmez.
+            let side = bounds.size.width.min(bounds.size.height);
+            let bounds = Bounds::centered_at(bounds.center(), size(side, side));
+            let pixels = (f32::from(side) * scale).round() as u32;
             if pixels == 0 {
                 return;
             }
@@ -69,11 +76,8 @@ impl RingCache {
         style: RingStyle,
     ) -> Option<Arc<RenderImage>> {
         let fraction = fraction.clamp(0.0, 1.0);
-        let key = Key {
-            pixels,
-            fraction: (fraction * 4096.0).round() as u32,
-            style: style_key(style),
-        };
+        let key =
+            Key { pixels, fraction: (fraction * 4096.0).round() as u32, style: style_key(style) };
 
         if self.key != Some(key) {
             let image = rasterize(pixels, scale, fraction, style)?;
@@ -132,11 +136,7 @@ fn rasterize(pixels: u32, scale: f32, fraction: f32, style: RingStyle) -> Option
             line_cap: if full { LineCap::Butt } else { LineCap::Round },
             ..Stroke::default()
         };
-        let arc = if full {
-            Some(track)
-        } else {
-            arc_path(center, center, ring_radius, fraction)
-        };
+        let arc = if full { Some(track) } else { arc_path(center, center, ring_radius, fraction) };
         if let Some(arc) = arc {
             pixmap.stroke_path(&arc, &paint(style.color), &stroke, identity, None);
         }

@@ -13,7 +13,15 @@ use std::{
 
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, prelude::*};
 
+use crate::status::{self, Format, StatusInfo};
+
 const SOCKET: &str = "pomodoro-widget.sock";
+
+/// Soket adı. `POMODORO_SOCKET` ile değiştirilebilir (ör. testte ikinci bir örnek
+/// çalıştırmak için).
+fn socket_name() -> String {
+    std::env::var("POMODORO_SOCKET").unwrap_or_else(|_| SOCKET.to_string())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -53,15 +61,16 @@ Komutlar (çalışan widget'a gönderilir):
   skip       Sonraki evreye geç
   mode       Pomodoro ↔ toplantı
   settings   Ayarlar panelini aç
-  status     Durumu xmobar biçiminde yazdır (widget kapalıysa boş)
+  status [--format xmobar|waybar|plain]
+             Durumu yazdır (Linux'ta varsayılan xmobar; widget kapalıysa boş)
 ";
 
-/// Widget'ın paylaştığı, sunucu iş parçacığının okuduğu durum satırı.
-pub type Status = Arc<Mutex<String>>;
+/// Widget'ın paylaştığı, sunucu iş parçacığının okuduğu durum.
+pub type Status = Arc<Mutex<StatusInfo>>;
 
 /// Çalışan widget'a komut gönderir; yanıtı döndürür.
 pub fn send(line: &str) -> io::Result<String> {
-    let name = SOCKET.to_ns_name::<GenericNamespaced>()?;
+    let name = socket_name().to_ns_name::<GenericNamespaced>()?;
     let mut conn = BufReader::new(LocalSocketStream::connect(name)?);
     conn.get_mut().write_all(format!("{line}\n").as_bytes())?;
     let mut reply = String::new();
@@ -78,7 +87,7 @@ pub enum Bind {
 
 /// Soketi dinlemeye başlar. Bağlantılar ayrı bir iş parçacığında işlenir.
 pub fn listen() -> io::Result<Bind> {
-    let name = SOCKET.to_ns_name::<GenericNamespaced>()?;
+    let name = socket_name().to_ns_name::<GenericNamespaced>()?;
     let listener = match ListenerOptions::new().name(name).create_sync() {
         Ok(listener) => listener,
         Err(e) if e.kind() == io::ErrorKind::AddrInUse => return Ok(Bind::AlreadyRunning),
@@ -96,8 +105,14 @@ pub fn listen() -> io::Result<Bind> {
                 continue;
             }
             let line = line.trim();
-            let reply = if line == "status" {
-                shared.lock().map(|s| s.clone()).unwrap_or_default()
+            let reply = if let Some(rest) = line.strip_prefix("status") {
+                match status_format(rest) {
+                    Some(format) => {
+                        let info = shared.lock().map(|s| s.clone()).unwrap_or_default();
+                        status::format(&info, format)
+                    }
+                    None => format!("bilinmeyen biçim:{rest}"),
+                }
             } else if let Some(command) = Command::parse(line) {
                 match tx.send_blocking(command) {
                     Ok(()) => "ok".into(),
@@ -113,6 +128,14 @@ pub fn listen() -> io::Result<Bind> {
     Ok(Bind::Listening(rx, status))
 }
 
+/// `status` ya da `status waybar` gibi bir satırın biçim kısmı.
+fn status_format(rest: &str) -> Option<Format> {
+    match rest.trim() {
+        "" => Some(Format::platform_default()),
+        name => Format::parse(name),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +146,12 @@ mod tests {
         assert_eq!(Command::parse("settings"), Some(Command::Settings));
         assert_eq!(Command::parse("status"), None, "status sunucu iş parçacığında yanıtlanır");
         assert_eq!(Command::parse("TOGGLE"), None);
+    }
+
+    #[test]
+    fn status_format_defaults_per_platform() {
+        assert_eq!(status_format(""), Some(Format::platform_default()));
+        assert_eq!(status_format(" waybar"), Some(Format::Waybar));
+        assert_eq!(status_format(" nope"), None);
     }
 }

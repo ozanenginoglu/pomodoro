@@ -17,11 +17,12 @@ use super::{
 use crate::{
     alert::{self, Alert, Chime},
     assets::icon,
-    config::{Config, NotificationConfig},
+    config::{AppearanceConfig, Config, NotificationConfig},
     ipc::{self, Command},
     meeting::{self, Meeting, MeetingDisplay, MeetingSettings, Stage},
-    platform,
+    platform::{self, Applied},
     pomodoro::{Phase, PhaseFinished, Pomodoro, PomodoroSettings},
+    status::StatusInfo,
     timer::{Remaining, TimerState, format_clock},
 };
 
@@ -113,6 +114,10 @@ pub struct Widget {
     meeting: Option<Meeting>,
     meeting_settings: MeetingSettings,
     notifications: NotificationConfig,
+    /// Uygulanmış görünüm ayarları (konum değişikliğini fark etmek için).
+    appearance: AppearanceConfig,
+    /// Wayland'de konum ancak yeniden açılışta değişir; sayaçlar dururken yapılır.
+    pending_restart: bool,
     /// Toplantı süresi/saati girişi.
     input: String,
     input_error: Option<SharedString>,
@@ -173,6 +178,8 @@ impl Widget {
             meeting: None,
             meeting_settings: c.meeting_settings(),
             notifications: c.notifications.clone(),
+            appearance: c.appearance.clone(),
+            pending_restart: false,
             input: String::new(),
             input_error: None,
             focus,
@@ -212,16 +219,22 @@ impl Widget {
         };
         let info = if let Some(meeting) = &self.meeting {
             let stage = meeting.stage(now);
-            platform::StatusInfo::Meeting {
+            StatusInfo::Meeting {
                 remaining: left(meeting.remaining(now)),
                 ends_at: meeting.ends_at().format("%H:%M").to_string(),
                 color: theme::hex(theme::stage(stage)),
+                stage: match stage {
+                    Stage::Normal => "meeting",
+                    Stage::Warning => "warning",
+                    Stage::Critical => "critical",
+                    Stage::Overtime => "overtime",
+                },
             }
         } else {
             let timer = self.pomodoro.timer();
             match timer.state() {
-                TimerState::Idle => platform::StatusInfo::Idle,
-                state => platform::StatusInfo::Pomodoro {
+                TimerState::Idle => StatusInfo::Idle,
+                state => StatusInfo::Pomodoro {
                     remaining: left(timer.remaining(now)),
                     on_break: self.pomodoro.phase() != Phase::Work,
                     paused: state == TimerState::Paused,
@@ -229,11 +242,8 @@ impl Widget {
                 },
             }
         };
-        let line = platform::format_status(&info);
-        if let Ok(mut status) = self.status.lock()
-            && *status != line
-        {
-            *status = line;
+        if let Ok(mut status) = self.status.lock() {
+            *status = info;
         }
     }
 
@@ -251,7 +261,24 @@ impl Widget {
             self.scale = scale;
             window.resize(size(px(side), px(side)));
         }
+        let appearance = &config.appearance;
+        let moved = appearance.position != self.appearance.position
+            || appearance.margin != self.appearance.margin
+            || appearance.always_on_top != self.appearance.always_on_top;
+        // Boyut değişince köşedeki widget'ın kenar boşluğu korunsun diye yeniden konumlanır.
+        if (moved || appearance.size != self.appearance.size)
+            && platform::apply_appearance(window, cx, appearance) == Applied::NeedsRestart
+            && moved
+        {
+            self.pending_restart = true;
+        }
+        self.appearance = appearance.clone();
         self.changed(cx);
+    }
+
+    /// Hiçbir sayaç çalışmıyor ve yarıda kalmış bir evre yok.
+    fn is_idle(&self) -> bool {
+        self.meeting.is_none() && self.pomodoro.timer().state() == TimerState::Idle
     }
 
     fn open_settings(&mut self, cx: &mut Context<Self>) {
@@ -346,6 +373,11 @@ impl Widget {
     }
 
     fn changed(&mut self, cx: &mut Context<Self>) {
+        if self.pending_restart && self.is_idle() {
+            log::info!("yeni konum için yeniden başlatılıyor");
+            cx.restart();
+            return;
+        }
         cx.notify();
         self.publish_status();
         self.ensure_ticker(cx);
@@ -429,12 +461,26 @@ impl Widget {
     }
 
     fn meeting_alert(&self, stage: Stage) -> Alert {
-        let end = self.meeting.as_ref().map(|m| m.ends_at().format("%H:%M").to_string()).unwrap_or_default();
+        let end = self
+            .meeting
+            .as_ref()
+            .map(|m| m.ends_at().format("%H:%M").to_string())
+            .unwrap_or_default();
         let s = &self.meeting_settings;
         let left = |d: Duration| format!("Bitişe {} dakika kaldı · {end}", d.as_secs() / 60);
         match stage {
-            Stage::Warning => Alert { title: "Toplantı".into(), body: left(s.warning), chime: Chime::Gentle, urgent: false },
-            Stage::Critical => Alert { title: "Toplantı".into(), body: left(s.critical), chime: Chime::Phase, urgent: false },
+            Stage::Warning => Alert {
+                title: "Toplantı".into(),
+                body: left(s.warning),
+                chime: Chime::Gentle,
+                urgent: false,
+            },
+            Stage::Critical => Alert {
+                title: "Toplantı".into(),
+                body: left(s.critical),
+                chime: Chime::Phase,
+                urgent: false,
+            },
             Stage::Overtime | Stage::Normal => Alert {
                 title: "Toplantı süresi doldu".into(),
                 body: format!("Bitiş saati {end} idi"),
@@ -501,11 +547,22 @@ impl Widget {
                 cx.background_executor().timer(POINTER_POLL).await;
                 let keep_going = window
                     .update(cx, |_, window, cx| {
+                        // X11: imleç konumu doğrudan sorgulanır (köşelere çıkışı da yakalar).
+                        // XWayland: imleç yerel bir Wayland yüzeyine geçince X sunucusu son
+                        // konumu bildirmeye devam eder; orada çıkış olayı ise güvenilir.
+                        // Wayland: konum sorgulanamaz; pencereden çıkış olayı güvenilir.
+                        // Daireden köşelere çıkışı orada `on_mouse_move` yakalar.
                         let pos = platform::pointer_position(window);
-                        let inside = pos.map(|pos| in_circle(pos, window));
-                        log::trace!("poll {pos:?} inside={inside:?}");
+                        let inside = match pos {
+                            Some(pos) if platform::is_xwayland() => {
+                                in_circle(pos, window) && window.is_window_hovered()
+                            }
+                            Some(pos) => in_circle(pos, window),
+                            None => window.is_window_hovered(),
+                        };
+                        log::trace!("poll {pos:?} inside={inside}");
                         this.update(cx, |this, cx| {
-                            if inside == Some(false) {
+                            if !inside {
                                 this.set_hovered(false, cx);
                             }
                             let watching = this.controls.visible;
@@ -594,17 +651,28 @@ impl Widget {
         Content {
             ring_color: color,
             fraction: 1.0 - timer.progress(now),
-            main: clock(timer.remaining(now), reveal, k, match state {
-                TimerState::Paused => theme::muted(),
-                _ => theme::text(),
-            })
+            main: clock(
+                timer.remaining(now),
+                reveal,
+                k,
+                match state {
+                    TimerState::Paused => theme::muted(),
+                    _ => theme::text(),
+                },
+            )
             .into_any_element(),
             info: Some(dots.into_any_element()),
             controls: Some(controls.into_any_element()),
         }
     }
 
-    fn meeting_view(&self, meeting: &Meeting, now: Instant, reveal: f32, cx: &mut Context<Self>) -> Content {
+    fn meeting_view(
+        &self,
+        meeting: &Meeting,
+        now: Instant,
+        reveal: f32,
+        cx: &mut Context<Self>,
+    ) -> Content {
         let stage = meeting.stage(now);
         let remaining = meeting.remaining(now);
         let end = SharedString::from(meeting.ends_at().format("%H:%M").to_string());
@@ -613,7 +681,9 @@ impl Widget {
             _ => theme::text(),
         };
         let k = self.scale;
-        let small = |text: SharedString| div().text_size(px(13.0 * k)).text_color(theme::muted()).child(text);
+        let small = |text: SharedString| {
+            div().text_size(px(13.0 * k)).text_color(theme::muted()).child(text)
+        };
 
         let (main, info) = match self.meeting_settings.display {
             MeetingDisplay::Remaining => (clock(remaining, reveal, k, clock_color), None),
@@ -745,7 +815,13 @@ fn until_next_second(remaining: Remaining) -> Duration {
 }
 
 /// Yuvarlak, hover'da hafifçe vurgulanan ikon düğmesi.
-fn icon_button(id: &'static str, path: &'static str, size: f32, k: f32, color: Hsla) -> Stateful<Div> {
+fn icon_button(
+    id: &'static str,
+    path: &'static str,
+    size: f32,
+    k: f32,
+    color: Hsla,
+) -> Stateful<Div> {
     let size = size * k;
     let box_size = size + 14.0 * k;
     div()
@@ -806,13 +882,19 @@ impl Render for Widget {
             .on_action(cx.listener(|this, _: &SwitchMode, _, cx| this.switch_mode(cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.open_settings(cx)))
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
-                if this.mode == Mode::Meeting && this.meeting.is_none() && this.input_key(&e.keystroke, cx) {
+                if this.mode == Mode::Meeting
+                    && this.meeting.is_none()
+                    && this.input_key(&e.keystroke, cx)
+                {
                     cx.stop_propagation();
                 }
             }))
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
-                window.focus(&this.focus, cx);
-            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.focus(&this.focus, cx);
+                }),
+            )
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
                 this.set_hovered(in_circle(e.position, window), cx);
             }))

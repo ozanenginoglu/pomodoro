@@ -6,14 +6,14 @@ use std::ops::RangeInclusive;
 
 use gpui::{
     App, AppContext, Bounds, Context, Div, ElementId, Entity, FocusHandle, Hsla, KeyBinding,
-    ParentElement, Render, SharedString, Styled, Subscription, Window, WindowBounds, WindowHandle,
-    actions, div, prelude::*, px, size, svg,
+    ParentElement, Render, SharedString, Styled, Subscription, Window, WindowHandle, actions, div,
+    prelude::*, px, size, svg,
 };
 
 use super::theme;
 use crate::{
     assets::icon,
-    config::{Config, Display, Size, limits},
+    config::{Config, Display, Position, Size, limits},
     platform,
 };
 
@@ -21,7 +21,7 @@ actions!(settings, [CloseSettings]);
 
 const CONTEXT: &str = "Settings";
 const WIDTH: f32 = 320.0;
-const HEIGHT: f32 = 556.0;
+const HEIGHT: f32 = 624.0;
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("escape", CloseSettings, Some(CONTEXT))]);
@@ -39,10 +39,12 @@ pub fn open(
         return Some(handle);
     }
     let bounds = Bounds::centered(None, size(px(WIDTH), px(HEIGHT)), cx);
-    let options = platform::settings_window_options(WindowBounds::Windowed(bounds));
-    cx.open_window(options, |window, cx| cx.new(|cx| SettingsPanel::new(config, window, cx)))
-        .inspect_err(|e| log::error!("ayarlar penceresi açılamadı: {e}"))
-        .ok()
+    platform::open_settings(cx, bounds, move |window, cx| {
+        let config = config.clone();
+        cx.new(|cx| SettingsPanel::new(config, window, cx))
+    })
+    .inspect_err(|e| log::error!("ayarlar penceresi açılamadı: {e}"))
+    .ok()
 }
 
 pub struct SettingsPanel {
@@ -147,7 +149,9 @@ impl SettingsPanel {
                 .items_center()
                 .when(on, |d| d.justify_end().bg(theme::accent()))
                 .when(!on, |d| d.justify_start().bg(theme::button_hover()))
-                .on_click(cx.listener(move |this, _, _, cx| this.set(cx, |c| *field(c) = !*field(c))))
+                .on_click(
+                    cx.listener(move |this, _, _, cx| this.set(cx, |c| *field(c) = !*field(c))),
+                )
                 .child(knob),
         )
     }
@@ -156,30 +160,54 @@ impl SettingsPanel {
         &self,
         key: &'static str,
         label: &'static str,
-        options: &[(T, &'static str)],
+        options: &[(T, Label)],
         selected: T,
         apply: fn(&mut Config, T),
         cx: &mut Context<Self>,
     ) -> Div {
         row(label).child(
-            div().flex().p(px(2.0)).gap(px(2.0)).rounded(px(8.0)).bg(theme::button_hover()).children(
-                options.iter().enumerate().map(|(i, &(value, text))| {
+            div()
+                .flex()
+                .p(px(2.0))
+                .gap(px(2.0))
+                .rounded(px(8.0))
+                .bg(theme::button_hover())
+                .children(options.iter().enumerate().map(|(i, &(value, label))| {
                     let active = value == selected;
+                    let color = if active { theme::text() } else { theme::muted() };
                     div()
                         .id(ElementId::from((key, i)))
                         .px(px(9.0))
                         .py(px(3.0))
                         .rounded(px(6.0))
                         .cursor_pointer()
-                        .text_color(if active { theme::text() } else { theme::muted() })
+                        .text_color(color)
                         .when(active, |d| d.bg(theme::surface()))
-                        .on_click(cx.listener(move |this, _, _, cx| this.set(cx, |c| apply(c, value))))
-                        .child(text)
-                }),
-            ),
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.set(cx, |c| apply(c, value))),
+                        )
+                        .child(match label {
+                            Label::Text(text) => div().child(text),
+                            // Metin satırıyla aynı yükseklikte dursun.
+                            Label::Icon(path) => div()
+                                .h(px(19.0))
+                                .flex()
+                                .items_center()
+                                .child(svg().path(path).size(px(14.0)).text_color(color)),
+                        })
+                })),
         )
     }
 }
+
+/// Seçim düğmesinin içeriği.
+#[derive(Clone, Copy)]
+enum Label {
+    Text(&'static str),
+    Icon(&'static str),
+}
+
+use Label::{Icon, Text};
 
 /// Bir "−  25 dk  +" satırının tanımı.
 struct Stepper {
@@ -210,12 +238,7 @@ fn row(label: &'static str) -> Div {
 }
 
 fn section(title: &'static str) -> Div {
-    div()
-        .pt(px(14.0))
-        .pb(px(2.0))
-        .text_size(px(11.0))
-        .text_color(theme::muted())
-        .child(title)
+    div().pt(px(14.0)).pb(px(2.0)).text_size(px(11.0)).text_color(theme::muted()).child(title)
 }
 
 fn close_button(cx: &mut Context<SettingsPanel>) -> impl IntoElement {
@@ -261,37 +284,125 @@ impl Render for SettingsPanel {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .child(div().text_size(px(16.0)).text_color(theme::text()).child("Ayarlar"))
+                            .child(
+                                div()
+                                    .text_size(px(16.0))
+                                    .text_color(theme::text())
+                                    .child("Ayarlar"),
+                            )
                             .child(close_button(cx)),
                     )
                     .child(section("POMODORO"))
-                    .child(self.stepper(stepper("work", "Çalışma", "dk", limits::WORK, |c| &mut c.pomodoro.work_minutes), p.work_minutes, cx))
-                    .child(self.stepper(stepper("short", "Kısa mola", "dk", limits::BREAK, |c| &mut c.pomodoro.short_break_minutes), p.short_break_minutes, cx))
-                    .child(self.stepper(stepper("long", "Uzun mola", "dk", limits::BREAK, |c| &mut c.pomodoro.long_break_minutes), p.long_break_minutes, cx))
-                    .child(self.stepper(stepper("rounds", "Uzun mola aralığı", "tur", limits::ROUNDS, |c| &mut c.pomodoro.rounds_before_long_break), p.rounds_before_long_break, cx))
-                    .child(self.toggle("auto-break", "Molayı kendiliğinden başlat", p.auto_start_breaks, |c| &mut c.pomodoro.auto_start_breaks, cx))
-                    .child(self.toggle("auto-work", "Çalışmayı kendiliğinden başlat", p.auto_start_work, |c| &mut c.pomodoro.auto_start_work, cx))
+                    .child(self.stepper(
+                        stepper("work", "Çalışma", "dk", limits::WORK, |c| {
+                            &mut c.pomodoro.work_minutes
+                        }),
+                        p.work_minutes,
+                        cx,
+                    ))
+                    .child(self.stepper(
+                        stepper("short", "Kısa mola", "dk", limits::BREAK, |c| {
+                            &mut c.pomodoro.short_break_minutes
+                        }),
+                        p.short_break_minutes,
+                        cx,
+                    ))
+                    .child(self.stepper(
+                        stepper("long", "Uzun mola", "dk", limits::BREAK, |c| {
+                            &mut c.pomodoro.long_break_minutes
+                        }),
+                        p.long_break_minutes,
+                        cx,
+                    ))
+                    .child(self.stepper(
+                        stepper("rounds", "Uzun mola aralığı", "tur", limits::ROUNDS, |c| {
+                            &mut c.pomodoro.rounds_before_long_break
+                        }),
+                        p.rounds_before_long_break,
+                        cx,
+                    ))
+                    .child(self.toggle(
+                        "auto-break",
+                        "Molayı kendiliğinden başlat",
+                        p.auto_start_breaks,
+                        |c| &mut c.pomodoro.auto_start_breaks,
+                        cx,
+                    ))
+                    .child(self.toggle(
+                        "auto-work",
+                        "Çalışmayı kendiliğinden başlat",
+                        p.auto_start_work,
+                        |c| &mut c.pomodoro.auto_start_work,
+                        cx,
+                    ))
                     .child(section("TOPLANTI"))
                     .child(self.segmented(
                         "display",
                         "Gösterim",
-                        &[(Display::Remaining, "Kalan"), (Display::EndTime, "Bitiş"), (Display::Both, "İkisi")],
+                        &[
+                            (Display::Remaining, Text("Kalan")),
+                            (Display::EndTime, Text("Bitiş")),
+                            (Display::Both, Text("İkisi")),
+                        ],
                         m.display,
                         |c, v| c.meeting.display = v,
                         cx,
                     ))
-                    .child(self.stepper(stepper("warn", "Uyarı", "dk", limits::WARNING, |c| &mut c.meeting.warning_minutes), m.warning_minutes, cx))
-                    .child(self.stepper(stepper("crit", "Son uyarı", "dk", limits::CRITICAL, |c| &mut c.meeting.critical_minutes), m.critical_minutes, cx))
+                    .child(self.stepper(
+                        stepper("warn", "Uyarı", "dk", limits::WARNING, |c| {
+                            &mut c.meeting.warning_minutes
+                        }),
+                        m.warning_minutes,
+                        cx,
+                    ))
+                    .child(self.stepper(
+                        stepper("crit", "Son uyarı", "dk", limits::CRITICAL, |c| {
+                            &mut c.meeting.critical_minutes
+                        }),
+                        m.critical_minutes,
+                        cx,
+                    ))
                     .child(section("BİLDİRİM"))
-                    .child(self.toggle("notify", "Bildirim", n.enabled, |c| &mut c.notifications.enabled, cx))
+                    .child(self.toggle(
+                        "notify",
+                        "Bildirim",
+                        n.enabled,
+                        |c| &mut c.notifications.enabled,
+                        cx,
+                    ))
                     .child(self.toggle("sound", "Ses", n.sound, |c| &mut c.notifications.sound, cx))
                     .child(section("GÖRÜNÜM"))
                     .child(self.segmented(
                         "size",
                         "Boyut",
-                        &[(Size::Small, "S"), (Size::Medium, "M"), (Size::Large, "L")],
+                        &[
+                            (Size::Small, Text("S")),
+                            (Size::Medium, Text("M")),
+                            (Size::Large, Text("L")),
+                        ],
                         c.appearance.size,
                         |c, v| c.appearance.size = v,
+                        cx,
+                    ))
+                    .child(self.segmented(
+                        "position",
+                        "Konum",
+                        &[
+                            (Position::TopLeft, Icon(icon::TOP_LEFT)),
+                            (Position::TopRight, Icon(icon::TOP_RIGHT)),
+                            (Position::Center, Icon(icon::CENTER)),
+                            (Position::BottomLeft, Icon(icon::BOTTOM_LEFT)),
+                            (Position::BottomRight, Icon(icon::BOTTOM_RIGHT)),
+                        ],
+                        c.appearance.position,
+                        |c, v| c.appearance.position = v,
+                        cx,
+                    ))
+                    .child(self.toggle(
+                        "on-top",
+                        "Her zaman üstte",
+                        c.appearance.always_on_top,
+                        |c| &mut c.appearance.always_on_top,
                         cx,
                     )),
             )

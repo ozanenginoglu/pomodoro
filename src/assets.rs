@@ -10,8 +10,22 @@ macro_rules! icons {
     };
 }
 
-static FILES: &[(&str, &[u8])] =
-    icons!["play", "pause", "rotate-ccw", "skip-forward", "settings", "users", "timer", "square", "x"];
+static FILES: &[(&str, &[u8])] = icons![
+    "play",
+    "pause",
+    "rotate-ccw",
+    "skip-forward",
+    "settings",
+    "users",
+    "timer",
+    "square",
+    "x",
+    "arrow-up-left",
+    "arrow-up-right",
+    "arrow-down-left",
+    "arrow-down-right",
+    "circle-dot"
+];
 
 pub struct Assets;
 
@@ -36,4 +50,9 @@ pub mod icon {
     pub const MEETING: &str = "icons/users.svg";
     pub const SETTINGS: &str = "icons/settings.svg";
     pub const CLOSE: &str = "icons/x.svg";
+    pub const TOP_LEFT: &str = "icons/arrow-up-left.svg";
+    pub const TOP_RIGHT: &str = "icons/arrow-up-right.svg";
+    pub const BOTTOM_LEFT: &str = "icons/arrow-down-left.svg";
+    pub const BOTTOM_RIGHT: &str = "icons/arrow-down-right.svg";
+    pub const CENTER: &str = "icons/circle-dot.svg";
 }

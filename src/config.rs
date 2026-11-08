@@ -100,10 +100,40 @@ impl Size {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Widget'ın ekrandaki yeri. Wayland'de (layer-shell) ve X11'de açılışta
+/// uygulanır; xmonad gibi pencere yöneticilerinde sonradan taşınabilir.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Position {
+    #[default]
+    Center,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppearanceConfig {
     pub size: Size,
+    pub position: Position,
+    /// Köşeye konumlandırırken ekran kenarından uzaklık (mantıksal piksel).
+    pub margin: u32,
+    /// Diğer pencerelerin üstünde dursun. Kapalıyken Wayland'de masaüstü
+    /// katmanına (pencerelerin altına) yerleşir.
+    pub always_on_top: bool,
+}
+
+impl Default for AppearanceConfig {
+    fn default() -> Self {
+        Self {
+            size: Size::default(),
+            position: Position::default(),
+            margin: 24,
+            always_on_top: true,
+        }
+    }
 }
 
 /// Ayarlar panelindeki sınırlar; dosyadan okunan değerler de bunlara kırpılır.
@@ -114,6 +144,7 @@ pub mod limits {
     pub const ROUNDS: RangeInclusive<u32> = 1..=12;
     pub const WARNING: RangeInclusive<u32> = 1..=30;
     pub const CRITICAL: RangeInclusive<u32> = 1..=10;
+    pub const MARGIN: RangeInclusive<u32> = 0..=400;
 }
 
 const fn minutes(m: u32) -> Duration {
@@ -123,7 +154,8 @@ const fn minutes(m: u32) -> Duration {
 impl Config {
     /// Değerleri geçerli aralıklara kırpar; son uyarı, uyarıdan büyük olamaz.
     pub fn normalized(mut self) -> Self {
-        let clamp = |v: &mut u32, r: std::ops::RangeInclusive<u32>| *v = (*v).clamp(*r.start(), *r.end());
+        let clamp =
+            |v: &mut u32, r: std::ops::RangeInclusive<u32>| *v = (*v).clamp(*r.start(), *r.end());
         let p = &mut self.pomodoro;
         clamp(&mut p.work_minutes, limits::WORK);
         clamp(&mut p.short_break_minutes, limits::BREAK);
@@ -133,6 +165,7 @@ impl Config {
         clamp(&mut m.warning_minutes, limits::WARNING);
         clamp(&mut m.critical_minutes, limits::CRITICAL);
         m.critical_minutes = m.critical_minutes.min(m.warning_minutes);
+        clamp(&mut self.appearance.margin, limits::MARGIN);
         self
     }
 
@@ -162,7 +195,8 @@ impl Config {
     }
 
     pub fn path() -> Option<PathBuf> {
-        directories::ProjectDirs::from("", "", "pomodoro").map(|d| d.config_dir().join("config.toml"))
+        directories::ProjectDirs::from("", "", "pomodoro")
+            .map(|d| d.config_dir().join("config.toml"))
     }
 
     /// Dosyayı okur. Yoksa varsayılanlar. Bozuksa dosyayı `.broken` olarak
@@ -218,8 +252,10 @@ mod tests {
         config.pomodoro.work_minutes = 50;
         config.meeting.display = Display::EndTime;
         config.appearance.size = Size::Large;
+        config.appearance.position = Position::TopRight;
         let text = toml::to_string_pretty(&config).unwrap();
         assert!(text.contains("display = \"end_time\""), "{text}");
+        assert!(text.contains("position = \"top_right\""), "{text}");
         assert_eq!(toml::from_str::<Config>(&text).unwrap(), config);
     }
 
