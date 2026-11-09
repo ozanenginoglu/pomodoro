@@ -525,7 +525,11 @@ impl Widget {
 
     /// Kamerayı açar ve son gördüğünü döndürür. Kamera açılamazsa ya da
     /// görüntü kesilirse arada bir yeniden denenir; o sırada klavye/fare yeterli olur.
+    /// Ayarlarda kamera "Yok" seçildiyse hiç açılmaz.
     fn watch_camera(&mut self) -> Option<camera::Sighting> {
+        if !self.camera_config.uses_camera() {
+            return None;
+        }
         let now = Instant::now();
         if self.camera.as_ref().is_some_and(|w| w.failed())
             && now.duration_since(self.camera_started) >= CAMERA_RETRY

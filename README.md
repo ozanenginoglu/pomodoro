@@ -9,7 +9,7 @@ Runs on **Linux (X11 and Wayland)** and **Windows**. It's written in Rust with [
 | | |
 |---|---|
 | **Pomodoro** | Work, short break and long break rounds. The dots under the clock show where you are in the cycle. Breaks can start on their own when a work round ends. |
-| **Break guard** | Optional. A break only counts down while you're away from the computer. While the camera sees you at the desk, it waits, and a little tomato on the widget glares at you until you step away. |
+| **Break guard** | Optional. A break only counts down while you're away from the computer. While the camera sees you at the desk (or, without a camera, while you use the keyboard and mouse), it waits, and a little tomato on the widget glares at you until you step away. |
 | **Meeting** | Type a length (`45`, `1h30`) or an end time (`14:30`) and it counts down. The ring turns yellow, then orange as the end gets close, and red when the meeting runs over. |
 | **Alerts** | A desktop notification and a short bell chime at the end of each round and at each meeting stage. |
 | **Status bar** | `pomodoro status` prints the current state for xmobar, waybar or plain text. |
@@ -86,7 +86,7 @@ A meeting can be up to 12 hours long. Pomodoro keeps running in the background w
 
 ### Break guard
 
-The break guard uses your camera, so it's off until you switch on *Pause breaks while I'm at the desk* in the settings panel and pick a camera with the arrows next to *Camera*. When a break starts, a little tomato appears on the widget. The break only counts down while you're away:
+The break guard is off until you switch on *Pause breaks while I'm at the desk* in the settings panel. Pick a camera with the arrows next to *Camera*, or choose *None* if you don't want the camera to watch you: the guard then goes by keyboard and mouse alone, and the camera is never opened. When a break starts, a little tomato appears on the widget. The break only counts down while you're away:
 
 ![Three widgets during a short break: the tomato smiling and looking down at the cursor while the break waits; the tomato dark red and angry, frowning and gritting its teeth with steam rising from its top; and the tomato calm and smiling again while the break counts down](docs/break-guard.png)
 
@@ -101,6 +101,7 @@ So a 5-minute break ends after 5 minutes away from the computer, and those minut
 
 You can still pause the break or skip it with the controls.
 
+- With *None*, sitting still at the desk counts as away, because only keyboard and mouse input shows that you're there.
 - The camera is on only during a guarded break and turns off when the break ends, is paused or is skipped.
 - Frames are processed in memory, about two per second, and never saved or sent anywhere. The detector only finds faces; it doesn't recognize who you are.
 - A face has to be visible for 1 second to count as present, and gone for 3 seconds to count as away, so briefly turning your head doesn't start the break.
@@ -151,11 +152,12 @@ The CSS class is one of `idle`, `work`, `break`, `paused`, `meeting`, `warning`,
 
 ### Linux (X11)
 
-The widget needs a compositor (e.g. **picom**) for the transparent corners; without one they show up black. Tiling window managers should float it. For xmonad and picom:
+The widget needs a compositor (e.g. **picom**) for the transparent corners; without one they show up black. Tiling window managers should float it and the settings panel. For xmonad and picom:
 
 ```haskell
--- xmonad.hs, in your manageHook
-className =? "pomodoro" --> doFloat
+-- xmonad.hs, in your manageHook (doCenterFloat is from XMonad.Hooks.ManageHelpers)
+className =? "pomodoro"          --> doFloat
+className =? "pomodoro-settings" --> doCenterFloat
 ```
 
 ```
@@ -197,7 +199,7 @@ auto_start_work = false
 
 [camera]
 enabled = false                 # break guard: breaks only count down while you're away
-# device = "/dev/video0"        # Linux: device path; Windows: set by the settings panel. Unset: the first camera
+# device = "/dev/video0"        # Linux: device path; Windows: set by the settings panel. Unset: the first camera; "none": keyboard and mouse only
 
 [meeting]
 display = "both"                # "remaining", "end_time" or "both"

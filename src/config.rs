@@ -50,13 +50,25 @@ impl Default for PomodoroConfig {
 
 /// Mola koruması: açıksa mola, kamera kullanıcıyı gördüğü (ya da klavye/fare
 /// kullanıldığı) sürece durur; yalnızca bilgisayardan uzakta geçen süre
-/// sayılır. Kamera yalnızca mola korunurken açılır.
+/// sayılır. Kamera yalnızca mola korunurken açılır. `device = "none"` ise
+/// kamera hiç açılmaz, yalnızca klavye/fareye bakılır.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CameraConfig {
     pub enabled: bool,
-    /// Kamera kimliği (Linux'ta aygıt yolu, ör. "/dev/video0"); yoksa ilk kamera.
+    /// Kamera kimliği (Linux'ta aygıt yolu, ör. "/dev/video0"); yoksa ilk kamera,
+    /// [`NO_CAMERA`] ise kamera kullanılmaz.
     pub device: Option<String>,
+}
+
+/// `device` için "kamera kullanma" değeri.
+pub const NO_CAMERA: &str = "none";
+
+impl CameraConfig {
+    /// Mola korunurken kamera açılsın mı? (Değilse yalnızca klavye/fare.)
+    pub fn uses_camera(&self) -> bool {
+        self.device.as_deref() != Some(NO_CAMERA)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -303,6 +315,15 @@ mod tests {
         let text = toml::to_string_pretty(&config).unwrap();
         assert!(text.contains("device = \"/dev/video10\""), "{text}");
         assert_eq!(toml::from_str::<Config>(&text).unwrap(), config);
+    }
+
+    #[test]
+    fn camera_can_be_turned_off() {
+        let config: Config =
+            toml::from_str("[camera]\nenabled = true\ndevice = \"none\"\n").unwrap();
+        assert!(config.camera.enabled);
+        assert!(!config.camera.uses_camera());
+        assert!(CameraConfig::default().uses_camera(), "aygıt yoksa ilk kamera");
     }
 
     #[test]

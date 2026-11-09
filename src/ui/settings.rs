@@ -15,7 +15,7 @@ use crate::i18n::{Language, t};
 use crate::{
     assets::icon,
     camera,
-    config::{Config, Display, Position, Size, limits},
+    config::{self, Config, Display, Position, Size, limits},
     platform,
 };
 
@@ -154,22 +154,33 @@ impl SettingsPanel {
         )
     }
 
-    /// Kamera seçici: "‹  Kamera adı  ›". Oklar kameralar arasında döner.
+    /// Kamera seçici: "‹  Kamera adı  ›". Oklar kameralar ve en sondaki
+    /// "Yok" (kamera kullanma, yalnızca klavye/fare) arasında döner.
     fn camera_row(&self, selected: Option<&str>, cx: &mut Context<Self>) -> Div {
-        let count = self.cameras.len();
-        let index =
-            selected.and_then(|id| self.cameras.iter().position(|d| d.id == id)).unwrap_or(0);
-        let name: SharedString = match self.cameras.get(index) {
-            // Seçili kamera şu an takılı değilse kimliğini göster.
-            _ if selected.is_some_and(|id| !self.cameras.iter().any(|d| d.id == id)) => {
-                selected.unwrap_or_default().to_string().into()
-            }
-            Some(device) => device.name.clone().into(),
-            None => t().no_camera.into(),
+        let ids: Vec<String> = self
+            .cameras
+            .iter()
+            .map(|d| d.id.clone())
+            .chain([config::NO_CAMERA.to_string()])
+            .collect();
+        let count = ids.len();
+        // Seçim yoksa ilk kamera; takılı olmayan bir kamera seçiliyse `None`.
+        let index = match selected {
+            Some(id) => ids.iter().position(|i| i == id),
+            None => (!self.cameras.is_empty()).then_some(0),
         };
+        let name: SharedString = match index {
+            Some(i) => match self.cameras.get(i) {
+                Some(device) => device.name.clone().into(),
+                None => t().camera_none.into(),
+            },
+            // Seçili kamera şu an takılı değilse kimliğini göster.
+            None => selected.map_or(t().no_camera.into(), |id| id.to_string().into()),
+        };
+        let found = index.is_some();
         let arrow = |id: usize, path: &'static str, step: usize| {
-            let enabled = count > 1;
-            let ids: Vec<String> = self.cameras.iter().map(|d| d.id.clone()).collect();
+            let enabled = count > 1 || !found;
+            let ids = ids.clone();
             div()
                 .id(ElementId::from(("camera", id)))
                 .size(px(26.0))
@@ -180,7 +191,9 @@ impl SettingsPanel {
                 .when(enabled, |d| {
                     d.cursor_pointer().hover(|s| s.bg(theme::button_hover())).on_click(cx.listener(
                         move |this, _, _, cx| {
-                            let next = ids[(index + step) % ids.len()].clone();
+                            // Seçim listede yoksa "Yok"tan sayılır.
+                            let from = index.unwrap_or(count - 1);
+                            let next = ids[(from + step) % count].clone();
                             this.set(cx, |c| c.camera.device = Some(next));
                         },
                     ))
@@ -196,13 +209,13 @@ impl SettingsPanel {
                 .flex()
                 .items_center()
                 .gap(px(2.0))
-                .child(arrow(0, icon::CHEVRON_LEFT, count.saturating_sub(1)))
+                .child(arrow(0, icon::CHEVRON_LEFT, count - 1))
                 .child(
                     div()
                         .w(px(140.0))
                         .flex()
                         .justify_center()
-                        .text_color(if count > 0 { theme::text() } else { theme::muted() })
+                        .text_color(if found { theme::text() } else { theme::muted() })
                         .child(
                             div().whitespace_nowrap().overflow_hidden().text_ellipsis().child(name),
                         ),
