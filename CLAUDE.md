@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Pomodoro (binary `pomodoro`): a round, frameless desktop timer widget written in Rust (edition 2024) with GPUI. It has two modes, Pomodoro rounds and a meeting countdown, plus a small settings panel, desktop alerts and a `pomodoro <command>` CLI that talks to the running widget. It targets Linux (X11, developed under xmonad + picom, and Wayland) and Windows. User-facing usage, keys, CLI and the full `config.toml` format are in `README.md`; keep it in sync when you change any of them.
 
-Code comments and commit messages are in Turkish. The README stays in English. All user-facing text goes through `src/i18n.rs` (English default, Turkish).
+Code comments are in Turkish. Commit messages and the README are in English. All user-facing text goes through `src/i18n.rs` (English default, Turkish).
 
 ## Commands
 
