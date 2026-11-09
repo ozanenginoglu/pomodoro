@@ -13,7 +13,8 @@ log = "0.4.35"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 tiny-skia = "0.11"
 smallvec = { version = "1", default-features = false }
-image = { version = "0.25", default-features = false }
+# jpeg: MJPEG veren kameralar için.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.2.1"
 directories = "6.0.0"
@@ -25,6 +26,8 @@ anyhow = "1.0.104"
 serde_json = "1.0.154"
 # Göz animasyonunun rastgele bakışları ve göz kırpmaları.
 fastrand = "2"
+# Kamerayla mola koruması: yüz algılama modeli (UltraFace, ONNX) için çıkarım.
+tract-onnx = "0.23"
 
 # Linux arka uçları gpui_platform'da varsayılan olarak kapalı; ikisini de açıyoruz.
 # Çalışırken ortama göre seçilir: WAYLAND_DISPLAY varsa Wayland, yoksa X11.
@@ -36,6 +39,8 @@ x11rb = { version = "0.13", features = ["screensaver"] }
 # Wayland'de klavye/fare hareketsizliği: ext-idle-notify-v1 (GPUI ile aynı sürümler).
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+# Kamera görüntüsü (V4L2). nokhwa I420 veren kameraları (ör. DroidCam) açamıyor.
+v4l = "0.14"
 
 [target.'cfg(windows)'.dependencies]
 gpui_platform = { version = "=0.3.11", package = "gpui-pre-platform" }
@@ -49,6 +54,8 @@ windows = { version = "0.62", features = [
 ] }
 # Oturum açılınca başlatma (HKCU\...\Run).
 windows-registry = "0.6"
+# Kamera görüntüsü (Media Foundation). Kareler ham alınıp kendimiz çeviriyoruz.
+nokhwa = { version = "0.10", default-features = false, features = ["input-msmf"] }
 
 [profile.release]
 lto = "thin"

@@ -14,6 +14,7 @@ use super::theme;
 use crate::i18n::{Language, t};
 use crate::{
     assets::icon,
+    camera,
     config::{Config, Display, Position, Size, limits},
     platform,
 };
@@ -23,7 +24,7 @@ actions!(settings, [CloseSettings]);
 const CONTEXT: &str = "Settings";
 const WIDTH: f32 = 320.0;
 /// Windows'ta fazladan "Oturum açılınca başlat" satırı var.
-const HEIGHT: f32 = if cfg!(windows) { 726.0 } else { 692.0 };
+const HEIGHT: f32 = if cfg!(windows) { 791.0 } else { 757.0 };
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("escape", CloseSettings, Some(CONTEXT))]);
@@ -51,6 +52,8 @@ pub fn open(
 
 pub struct SettingsPanel {
     config: Entity<Config>,
+    /// Panel açılırken bulunan kameralar.
+    cameras: Vec<camera::Device>,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -68,7 +71,7 @@ impl SettingsPanel {
                 }
             }),
         ];
-        Self { config, focus, _subscriptions: subscriptions }
+        Self { config, cameras: camera::devices(), focus, _subscriptions: subscriptions }
     }
 
     /// Ayarı değiştirir, sınırlara kırpar, kaydeder ve widget'a haber verir.
@@ -146,6 +149,63 @@ impl SettingsPanel {
             label,
             on,
             cx.listener(move |this, _, _, cx| this.set(cx, |c| *field(c) = !*field(c))),
+        )
+    }
+
+    /// Kamera seçici: "‹  Kamera adı  ›". Oklar kameralar arasında döner.
+    fn camera_row(&self, selected: Option<&str>, cx: &mut Context<Self>) -> Div {
+        let count = self.cameras.len();
+        let index =
+            selected.and_then(|id| self.cameras.iter().position(|d| d.id == id)).unwrap_or(0);
+        let name: SharedString = match self.cameras.get(index) {
+            // Seçili kamera şu an takılı değilse kimliğini göster.
+            _ if selected.is_some_and(|id| !self.cameras.iter().any(|d| d.id == id)) => {
+                selected.unwrap_or_default().to_string().into()
+            }
+            Some(device) => device.name.clone().into(),
+            None => t().no_camera.into(),
+        };
+        let arrow = |id: usize, path: &'static str, step: usize| {
+            let enabled = count > 1;
+            let ids: Vec<String> = self.cameras.iter().map(|d| d.id.clone()).collect();
+            div()
+                .id(ElementId::from(("camera", id)))
+                .size(px(26.0))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(enabled, |d| {
+                    d.cursor_pointer().hover(|s| s.bg(theme::button_hover())).on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            let next = ids[(index + step) % ids.len()].clone();
+                            this.set(cx, |c| c.camera.device = Some(next));
+                        },
+                    ))
+                })
+                .child(svg().path(path).size(px(14.0)).text_color(if enabled {
+                    theme::text()
+                } else {
+                    theme::ring_track()
+                }))
+        };
+        row(t().camera).child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .child(arrow(0, icon::CHEVRON_LEFT, count.saturating_sub(1)))
+                .child(
+                    div()
+                        .w(px(140.0))
+                        .flex()
+                        .justify_center()
+                        .text_color(if count > 0 { theme::text() } else { theme::muted() })
+                        .child(
+                            div().whitespace_nowrap().overflow_hidden().text_ellipsis().child(name),
+                        ),
+                )
+                .child(arrow(1, icon::CHEVRON_RIGHT, 1)),
         )
     }
 
@@ -374,13 +434,15 @@ impl Render for SettingsPanel {
                         |c| &mut c.pomodoro.auto_start_work,
                         cx,
                     ))
+                    .child(section(t().section_camera))
                     .child(self.toggle(
-                        "guard-breaks",
-                        t().guard_breaks,
-                        p.guard_breaks,
-                        |c| &mut c.pomodoro.guard_breaks,
+                        "use-camera",
+                        t().use_camera,
+                        c.camera.enabled,
+                        |c| &mut c.camera.enabled,
                         cx,
                     ))
+                    .child(self.camera_row(c.camera.device.as_deref(), cx))
                     .child(section(t().section_meeting))
                     .child(self.segmented(
                         "display",

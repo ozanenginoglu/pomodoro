@@ -18,7 +18,8 @@ use super::{
 use crate::{
     alert::{self, Alert, Chime},
     assets::icon,
-    config::{AppearanceConfig, Config, NotificationConfig, Position},
+    camera,
+    config::{AppearanceConfig, CameraConfig, Config, NotificationConfig, Position},
     i18n::{self, t},
     ipc::{self, Command},
     meeting::{self, Meeting, MeetingDisplay, MeetingSettings, Stage},
@@ -55,6 +56,8 @@ const FRAME: Duration = Duration::from_millis(16);
 const POINTER_POLL: Duration = Duration::from_millis(100);
 /// Göz görünürken yeniden çizim aralığı (~30 fps; yavaş hareketler için yeterli).
 const EYE_FRAME: Duration = Duration::from_millis(33);
+/// Açılamayan ya da görüntüsü kesilen kamera bu aralıkla yeniden denenir.
+const CAMERA_RETRY: Duration = Duration::from_secs(10);
 /// Mola korunurken kullanıcının bilgisayar başında olup olmadığını yoklama aralığı.
 const PRESENCE_POLL: Duration = Duration::from_millis(250);
 
@@ -124,12 +127,16 @@ pub struct Widget {
     meeting: Option<Meeting>,
     meeting_settings: MeetingSettings,
     notifications: NotificationConfig,
-    /// Mola koruması açık mı (ayar).
-    guard_breaks: bool,
-    /// Kullanıcı bilgisayar başında mı? Mola korunurken yoklanır; platform
-    /// bilemiyorsa `None` (o zaman göz görünmez, mola her zamanki gibi işler).
+    /// Kullanıcı bilgisayar başında mı? Mola korunurken yoklanır; ne kamera
+    /// ne de platform bilemiyorsa `None` (göz görünmez, mola her zamanki gibi işler).
     activity: Option<bool>,
     next_presence_poll: Instant,
+    camera_config: CameraConfig,
+    /// Kamera; yalnızca mola korunurken ve ayar açıkken açık.
+    camera: Option<camera::Watch>,
+    camera_started: Instant,
+    /// Kameranın son gördüğü yüzün merkezi; göz ona bakar.
+    face: Option<[f32; 2]>,
     /// Mola bekçisi göz; yalnızca mola korunurken var.
     eye: Option<Eye>,
     /// En son çizilen göz pozu; değişmedikçe yeniden çizilmez.
@@ -205,9 +212,12 @@ impl Widget {
             meeting: None,
             meeting_settings: c.meeting_settings(),
             notifications: c.notifications.clone(),
-            guard_breaks: c.pomodoro.guard_breaks,
             activity: None,
             next_presence_poll: Instant::now(),
+            camera_config: c.camera.clone(),
+            camera: None,
+            camera_started: Instant::now(),
+            face: None,
             eye: None,
             drawn_eye: None,
             eye_image: SharedEyeCache::default(),
@@ -289,8 +299,13 @@ impl Widget {
         self.pomodoro.set_settings(pomodoro_settings(config));
         self.meeting_settings = config.meeting_settings();
         self.notifications = config.notifications.clone();
-        self.guard_breaks = config.pomodoro.guard_breaks;
-        if !self.guard_breaks {
+        if config.camera != self.camera_config {
+            // Kamera değiştiyse ya da kapatıldıysa, gerekiyorsa sonraki yoklamada yeniden açılır.
+            self.camera_config = config.camera.clone();
+            self.camera = None;
+            self.face = None;
+        }
+        if !self.camera_config.enabled {
             self.pomodoro.set_user_present(false, Instant::now());
         }
         if let Some(meeting) = &mut self.meeting {
@@ -461,7 +476,9 @@ impl Widget {
 
     /// Bir mola sürüyor (ya da kullanıcı yüzünden tutuluyor) ve ayar açık.
     fn guarding(&self) -> bool {
-        self.guard_breaks && self.pomodoro.phase() != Phase::Work && self.pomodoro.is_active()
+        self.camera_config.enabled
+            && self.pomodoro.phase() != Phase::Work
+            && self.pomodoro.is_active()
     }
 
     /// Göz görünür mü? Kullanıcının etkinliği bilinemiyorsa koruma yoktur.
@@ -475,20 +492,55 @@ impl Widget {
         let now = Instant::now();
         if !self.guarding() {
             self.activity = None;
+            // Mola bitti: kamera hemen kapansın.
+            self.camera = None;
+            self.face = None;
             return;
         }
         if now < self.next_presence_poll {
             return;
         }
         self.next_presence_poll = now + PRESENCE_POLL;
-        self.activity = platform::user_active();
+        // Kamera bir yüz görüyorsa ya da klavye/fare kullanılıyorsa bilgisayar
+        // başında. Kamera açılırken, açılamadığında ya da görüntü kesildiğinde
+        // yalnızca klavye/fareye bakılır.
+        let input = platform::user_active();
+        let sighting = self.watch_camera();
+        self.face = sighting.and_then(|s| s.face);
+        self.activity = match sighting {
+            Some(s) => Some(s.present || input.unwrap_or(false)),
+            None => input,
+        };
         // Bilinemiyorsa mola her zamanki gibi işler.
         let present = self.activity.unwrap_or(false);
-        if self.pomodoro.set_user_present(present, now) {
-            log::debug!("mola {}", if present { "tutuldu" } else { "sürüyor" });
+        if let Some(change) = self.pomodoro.set_user_present(present, now) {
+            log::debug!("mola koruması: {change:?}");
             self.publish_status();
             self.ensure_ticker(cx);
+            // Baştan başlayan molanın saati hemen görünsün.
+            cx.notify();
         }
+    }
+
+    /// Kamerayı açar ve son gördüğünü döndürür. Kamera açılamazsa ya da
+    /// görüntü kesilirse arada bir yeniden denenir; o sırada klavye/fare yeterli olur.
+    fn watch_camera(&mut self) -> Option<camera::Sighting> {
+        let now = Instant::now();
+        if self.camera.as_ref().is_some_and(|w| w.failed())
+            && now.duration_since(self.camera_started) >= CAMERA_RETRY
+        {
+            self.camera = None;
+        }
+        if self.camera.is_none() {
+            self.camera_started = now;
+        }
+        let watch = self
+            .camera
+            .get_or_insert_with(|| camera::Watch::start(self.camera_config.device.clone()));
+        if watch.failed() {
+            return None;
+        }
+        watch.sighting()
     }
 
     // ---- Zamanlama ---------------------------------------------------------
@@ -722,7 +774,9 @@ impl Widget {
             return self.drawn_eye.is_some();
         }
         let mood = if self.pomodoro.is_held() { Mood::Watching } else { Mood::Relaxed };
-        let cursor = (mood == Mood::Watching)
+        // Kamera bir yüz görüyorsa göz ona, yoksa imlece bakar.
+        let face = self.face.map(face_direction);
+        let cursor = (mood == Mood::Watching && face.is_none())
             .then(|| platform::cursor_position(window))
             .flatten()
             .map(|p| {
@@ -734,7 +788,7 @@ impl Widget {
                 eye::cursor_direction(dx, dy, side)
             });
         let eye = self.eye.get_or_insert_with(|| Eye::new(now));
-        eye.update(now, mood, cursor);
+        eye.update(now, mood, face.or(cursor));
         self.drawn_eye != Some(eye.pose(now).quantized())
     }
 
@@ -1006,6 +1060,13 @@ fn pomodoro_settings(config: &Config) -> PomodoroSettings {
         };
     }
     settings
+}
+
+/// Kameradaki yüzün konumundan gözün bakış yönü. Kamera kullanıcıya baktığı
+/// için görüntü aynalanmamıştır: kullanıcı kendi soluna geçince karenin
+/// sağında görünür; göz de (ekranda) sola bakmalı.
+fn face_direction([x, y]: [f32; 2]) -> [f32; 2] {
+    [(0.5 - x) * 2.0, (y - 0.5) * 1.6].map(|v| v.clamp(-1.0, 1.0))
 }
 
 /// Gösterilen saniyenin değişmesine kalan süre (+ küçük bir pay).

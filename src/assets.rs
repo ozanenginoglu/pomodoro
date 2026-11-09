@@ -24,7 +24,9 @@ static FILES: &[(&str, &[u8])] = icons![
     "arrow-up-right",
     "arrow-down-left",
     "arrow-down-right",
-    "circle-dot"
+    "circle-dot",
+    "chevron-left",
+    "chevron-right"
 ];
 
 pub struct Assets;
@@ -55,4 +57,6 @@ pub mod icon {
     pub const BOTTOM_LEFT: &str = "icons/arrow-down-left.svg";
     pub const BOTTOM_RIGHT: &str = "icons/arrow-down-right.svg";
     pub const CENTER: &str = "icons/circle-dot.svg";
+    pub const CHEVRON_LEFT: &str = "icons/chevron-left.svg";
+    pub const CHEVRON_RIGHT: &str = "icons/chevron-right.svg";
 }

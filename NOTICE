@@ -7,3 +7,8 @@ This product includes software developed by Ozan Enginoglu.
 This product includes icons from Lucide (https://lucide.dev),
 Copyright (c) 2026 Lucide Icons and Contributors, licensed under the
 ISC License. See assets/icons/LICENSE.
+
+This product includes the Ultra-Light-Fast-Generic-Face-Detector-1MB
+face detection model (version-RFB-320, as published in the ONNX Model Zoo),
+Copyright (c) 2019 linzai, licensed under the MIT License.
+See assets/models/LICENSE.

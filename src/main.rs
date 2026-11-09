@@ -4,6 +4,7 @@
 
 mod alert;
 mod assets;
+mod camera;
 mod config;
 mod i18n;
 mod ipc;

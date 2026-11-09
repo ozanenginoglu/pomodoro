@@ -9,12 +9,12 @@ Runs on **Linux (X11 and Wayland)** and **Windows**. It's written in Rust with [
 | | |
 |---|---|
 | **Pomodoro** | Work, short break and long break rounds. The dots under the clock show where you are in the cycle. Breaks can start on their own when a work round ends. |
-| **Break guard** | A break only counts down while you're away from the computer. If you keep typing or moving the mouse, it waits, and an eye on the widget watches you until you step away. |
+| **Break guard** | Optional. A break only counts down while you're away from the computer. While the camera sees you at the desk, it waits, and an eye on the widget watches you until you step away. |
 | **Meeting** | Type a length (`45`, `1h30`) or an end time (`14:30`) and it counts down. The ring turns yellow, then orange as the end gets close, and red when the meeting runs over. |
 | **Alerts** | A desktop notification and a short bell chime at the end of each round and at each meeting stage. |
 | **Status bar** | `pomodoro status` prints the current state for xmobar, waybar or plain text. |
 
-![The settings panel: work, short break and long break lengths, rounds before a long break, auto-start and break guard switches, meeting display and warning times, notification and sound switches, and the widget's size, position, always-on-top setting and language](docs/settings.png)
+![The settings panel: work, short break and long break lengths, rounds before a long break, auto-start switches, the break guard switch and camera picker, meeting display and warning times, notification and sound switches, and the widget's size, position, always-on-top setting and language](docs/settings.png)
 
 ## Install
 
@@ -86,16 +86,27 @@ A meeting can be up to 12 hours long. Pomodoro keeps running in the background w
 
 ### Break guard
 
-When a break starts, an eye opens on the widget. The break only counts down while you're away:
+The break guard uses your camera, so it's off until you switch on *Pause breaks while I'm at the desk* in the settings panel and pick a camera with the arrows next to *Camera*. When a break starts, an eye opens on the widget. The break only counts down while you're away:
 
 ![Three widgets during a short break: the eye wide open and looking down at the cursor while the break waits; the eye narrowed under a frowning brow, looking right at the cursor; and the eye half-closed and relaxed while the break counts down](docs/break-guard.png)
 
-- **You're still working** (you typed or moved the mouse in the last 10 seconds): the break waits. The eye opens wide, follows your cursor and, after a few seconds, frowns.
-- **You stepped away** (no keyboard or mouse input for 10 seconds): the eye relaxes and looks around, and the break counts down.
+- **You're still at the desk** (the camera sees your face, or you typed or moved the mouse in the last 10 seconds): the break waits. The eye opens wide, looks at you (or at your cursor) and, after a few seconds, frowns.
+- **You stepped away** (no face for 3 seconds and no keyboard or mouse input): the eye relaxes and looks around, and the break counts down.
 
-So a 5-minute break ends after 5 minutes away from the computer. You can still pause the break or skip it with the controls. To turn the guard off, switch off *Pause breaks while I work* in the settings panel.
+So a 5-minute break ends after 5 minutes away from the computer, and those minutes have to be in one piece:
 
-Activity comes from the system's idle time: the MIT-SCREEN-SAVER extension on X11, the `ext-idle-notify-v1` protocol on Wayland (Hyprland, Sway, niri, KDE Plasma, …) and `GetLastInputInfo` on Windows. On a Wayland compositor without `ext-idle-notify-v1`, the eye doesn't appear and breaks run as usual. The eye follows the cursor on X11 and Windows; on Wayland it looks straight ahead, because Wayland doesn't tell apps where the cursor is.
+- If you're still at the desk when the break starts, it simply waits for you to leave.
+- Once the break has started counting, coming back for less than 25 seconds (to dismiss a notification, say) only pauses it.
+- Coming back for 25 seconds or more restarts the break from its full length. It counts down again once you leave.
+
+You can still pause the break or skip it with the controls.
+
+- The camera is on only during a guarded break and turns off when the break ends, is paused or is skipped.
+- Frames are processed in memory, about two per second, and never saved or sent anywhere. The detector only finds faces; it doesn't recognize who you are.
+- A face has to be visible for 1 second to count as present, and gone for 3 seconds to count as away, so briefly turning your head doesn't start the break.
+- If the camera can't be opened or stops sending frames, the guard goes by keyboard and mouse alone (sitting still then counts as away) and tries the camera again every 10 seconds.
+
+Faces are found with the [UltraFace](https://github.com/Linzaer/Ultra-Light-Fast-Generic-Face-Detector-1MB) RFB-320 model (MIT, built into the binary) running on [tract](https://github.com/sonos/tract). Cameras are read through V4L2 on Linux (YUYV, NV12, I420, MJPEG, grey and RGB; loopback devices such as DroidCam work too) and Media Foundation on Windows. Keyboard and mouse activity comes from the system's idle time: the MIT-SCREEN-SAVER extension on X11, the `ext-idle-notify-v1` protocol on Wayland and `GetLastInputInfo` on Windows. The eye looks at your face when the camera sees it; otherwise it follows the cursor on X11 and Windows and looks straight ahead on Wayland, because Wayland doesn't tell apps where the cursor is.
 
 ### Command line
 
@@ -182,7 +193,10 @@ long_break_minutes = 15         # 1–60
 rounds_before_long_break = 4    # 1–12
 auto_start_breaks = true
 auto_start_work = false
-guard_breaks = true             # breaks only count down while you're away
+
+[camera]
+enabled = false                 # break guard: breaks only count down while you're away
+# device = "/dev/video0"        # Linux: device path; Windows: set by the settings panel. Unset: the first camera
 
 [meeting]
 display = "both"                # "remaining", "end_time" or "both"
@@ -207,4 +221,4 @@ Values outside the allowed range are clamped. If the file can't be read, it's re
 
 Licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE).
 
-The icons are from [Lucide](https://lucide.dev), licensed under the ISC License (see [`assets/icons/LICENSE`](assets/icons/LICENSE)).
+The icons are from [Lucide](https://lucide.dev), licensed under the ISC License (see [`assets/icons/LICENSE`](assets/icons/LICENSE)). The face detection model is UltraFace by linzai, licensed under the MIT License (see [`assets/models/LICENSE`](assets/models/LICENSE)).

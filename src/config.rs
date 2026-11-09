@@ -18,6 +18,7 @@ pub struct Config {
     /// Arayüz dili. Tablolardan önce yazılmalı (TOML kuralı), bu yüzden ilk alan.
     pub language: Language,
     pub pomodoro: PomodoroConfig,
+    pub camera: CameraConfig,
     pub meeting: MeetingConfig,
     pub notifications: NotificationConfig,
     pub appearance: AppearanceConfig,
@@ -32,9 +33,6 @@ pub struct PomodoroConfig {
     pub rounds_before_long_break: u32,
     pub auto_start_breaks: bool,
     pub auto_start_work: bool,
-    /// Mola, kullanıcı klavyeyi/fareyi kullandığı sürece durur; yalnızca
-    /// bilgisayardan uzakta geçen süre sayılır.
-    pub guard_breaks: bool,
 }
 
 impl Default for PomodoroConfig {
@@ -46,9 +44,19 @@ impl Default for PomodoroConfig {
             rounds_before_long_break: 4,
             auto_start_breaks: true,
             auto_start_work: false,
-            guard_breaks: true,
         }
     }
+}
+
+/// Mola koruması: açıksa mola, kamera kullanıcıyı gördüğü (ya da klavye/fare
+/// kullanıldığı) sürece durur; yalnızca bilgisayardan uzakta geçen süre
+/// sayılır. Kamera yalnızca mola korunurken açılır.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CameraConfig {
+    pub enabled: bool,
+    /// Kamera kimliği (Linux'ta aygıt yolu, ör. "/dev/video0"); yoksa ilk kamera.
+    pub device: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,6 +290,19 @@ mod tests {
         assert_eq!(config.pomodoro.work_minutes, 50);
         assert_eq!(config.pomodoro.short_break_minutes, 5);
         assert_eq!(config.meeting, MeetingConfig::default());
+        assert_eq!(config.camera, CameraConfig::default());
+        assert!(!config.camera.enabled, "kamera varsayılan olarak kapalı");
+    }
+
+    #[test]
+    fn camera_device_roundtrips() {
+        let config = Config {
+            camera: CameraConfig { enabled: true, device: Some("/dev/video10".into()) },
+            ..Config::default()
+        };
+        let text = toml::to_string_pretty(&config).unwrap();
+        assert!(text.contains("device = \"/dev/video10\""), "{text}");
+        assert_eq!(toml::from_str::<Config>(&text).unwrap(), config);
     }
 
     #[test]

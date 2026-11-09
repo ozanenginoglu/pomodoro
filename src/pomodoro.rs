@@ -55,6 +55,22 @@ impl PomodoroSettings {
     }
 }
 
+/// Molanın uzakta sayılan kısmı başladıktan sonra kullanıcı bu kadar süre
+/// bilgisayar başında kalırsa mola baştan başlar. Daha kısa dönüşler (bir
+/// bildirimi kapatmak, kameranın önünden geçmek) yalnızca molayı bekletir.
+pub const RESTART_AFTER: Duration = Duration::from_secs(25);
+
+/// Mola korumasının yaptığı değişiklik.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Guard {
+    /// Kullanıcı bilgisayar başında; mola bekliyor.
+    Held,
+    /// Kullanıcı uzaklaştı; mola işliyor.
+    Released,
+    /// Kullanıcı mola sırasında geri dönüp oturdu; mola baştan başlayacak.
+    Restarted,
+}
+
 /// Bir evre süresi dolarak bittiğinde üretilir (bildirim/ses için).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PhaseFinished {
@@ -72,12 +88,14 @@ pub struct Pomodoro {
     /// Mola, kullanıcı bilgisayar başında olduğu için durduruldu. Kullanıcının
     /// duraklatmasından farklıdır: arayüzde mola sürüyor gibi görünür.
     held: bool,
+    /// Tutulmanın başladığı an.
+    held_since: Option<Instant>,
 }
 
 impl Pomodoro {
     pub fn new(settings: PomodoroSettings) -> Self {
         let timer = Countdown::new(settings.work);
-        Self { settings, phase: Phase::Work, completed: 0, timer, held: false }
+        Self { settings, phase: Phase::Work, completed: 0, timer, held: false, held_since: None }
     }
 
     pub fn phase(&self) -> Phase {
@@ -120,24 +138,37 @@ impl Pomodoro {
     }
 
     /// Mola koruması: kullanıcı bilgisayar başındaysa süren molayı tutar,
-    /// uzaklaşınca bırakır. Çalışma evresinde ve duraklatılmış molada bir
-    /// şey yapmaz. Durum değiştiyse `true`.
-    pub fn set_user_present(&mut self, present: bool, now: Instant) -> bool {
+    /// uzaklaşınca bırakır. Mola işlemeye başladıktan sonra kullanıcı
+    /// `RESTART_AFTER` kadar bilgisayar başında kalırsa mola baştan başlar:
+    /// sayılan, parça parça değil kesintisiz uzakta geçen süredir. Çalışma
+    /// evresinde ve duraklatılmış molada bir şey yapmaz.
+    pub fn set_user_present(&mut self, present: bool, now: Instant) -> Option<Guard> {
         if self.phase == Phase::Work {
-            return false;
+            return None;
         }
         match (present, self.held) {
             (true, false) if self.timer.is_running() => {
                 self.timer.pause(now);
                 self.held = true;
-                true
+                self.held_since = Some(now);
+                Some(Guard::Held)
+            }
+            (true, true)
+                if !self.timer.elapsed(now).is_zero()
+                    && self.held_since.is_some_and(|t| now.duration_since(t) >= RESTART_AFTER) =>
+            {
+                // Tutulmuş (duraklamış) halde, sıfır geçmiş süreyle.
+                self.timer = Countdown::new(self.settings.duration_of(self.phase));
+                self.timer.start(now);
+                self.timer.pause(now);
+                Some(Guard::Restarted)
             }
             (false, true) => {
                 self.timer.start(now);
                 self.held = false;
-                true
+                Some(Guard::Released)
             }
-            _ => false,
+            _ => None,
         }
     }
 
@@ -351,31 +382,66 @@ mod tests {
     fn break_is_held_while_user_is_present() {
         let mut now = Instant::now();
         let mut p = on_break(&mut now);
-        assert!(p.set_user_present(true, now));
+        assert_eq!(p.set_user_present(true, now), Some(Guard::Held));
         assert!(p.is_held() && p.is_active());
         // Bilgisayar başında geçen 3 dakika moladan düşmez.
         now += 3 * MIN;
         assert_eq!(p.timer().remaining(now), Remaining::Left(5 * MIN));
         assert_eq!(p.tick(now), None);
-        assert!(p.set_user_present(false, now));
+        assert_eq!(p.set_user_present(true, now), None, "molanın başındaki bekleme sıfırlamaz");
+        assert_eq!(p.set_user_present(false, now), Some(Guard::Released));
         assert!(!p.is_held());
         now += 2 * MIN;
         assert_eq!(p.timer().remaining(now), Remaining::Left(3 * MIN));
     }
 
+    /// Kullanıcı `seconds` boyunca bilgisayar başında; widget gibi sık yoklar.
+    fn present_for(p: &mut Pomodoro, now: &mut Instant, seconds: u64) -> Vec<Guard> {
+        let mut changes = Vec::new();
+        for _ in 0..seconds * 4 {
+            changes.extend(p.set_user_present(true, *now));
+            *now += Duration::from_millis(250);
+        }
+        changes.extend(p.set_user_present(false, *now));
+        changes
+    }
+
     #[test]
-    fn break_only_ends_after_enough_time_away() {
+    fn short_returns_only_hold_the_break() {
         let mut now = Instant::now();
         let mut p = on_break(&mut now);
-        for _ in 0..4 {
+        for _ in 0..3 {
             now += MIN; // 1 dk uzakta
-            p.set_user_present(true, now);
-            now += 10 * MIN; // 10 dk bilgisayar başında
+            let changes = present_for(&mut p, &mut now, 20); // 20 sn başında
+            assert_eq!(changes, [Guard::Held, Guard::Released]);
             assert_eq!(p.tick(now), None);
-            p.set_user_present(false, now);
         }
+        // 3 dk uzakta geçti; kalan 2 dk.
+        assert_eq!(p.timer().remaining(now), Remaining::Left(2 * MIN));
+        now += 2 * MIN;
+        assert_eq!(p.tick(now).map(|e| e.next), Some(Phase::Work));
+    }
+
+    #[test]
+    fn coming_back_for_a_while_restarts_the_break() {
+        let mut now = Instant::now();
+        let mut p = on_break(&mut now);
+        now += 4 * MIN; // 4 dk uzakta
+        let changes = present_for(&mut p, &mut now, 30);
+        assert_eq!(changes, [Guard::Held, Guard::Restarted, Guard::Released]);
+        assert_eq!(p.timer().remaining(now), Remaining::Left(5 * MIN), "mola baştan");
+        now += 4 * MIN;
+        assert_eq!(p.tick(now), None);
         now += MIN;
         assert_eq!(p.tick(now).map(|e| e.next), Some(Phase::Work));
+    }
+
+    #[test]
+    fn waiting_at_the_start_of_a_break_does_not_restart_it() {
+        let mut now = Instant::now();
+        let mut p = on_break(&mut now);
+        assert_eq!(present_for(&mut p, &mut now, 60), [Guard::Held, Guard::Released]);
+        assert_eq!(p.timer().remaining(now), Remaining::Left(5 * MIN));
     }
 
     #[test]
@@ -383,13 +449,17 @@ mod tests {
         let now = Instant::now();
         let mut p = Pomodoro::new(settings());
         p.toggle(now);
-        assert!(!p.set_user_present(true, now), "çalışma evresi tutulmaz");
+        assert_eq!(p.set_user_present(true, now), None, "çalışma evresi tutulmaz");
 
         let mut now = now;
         let mut p = on_break(&mut now);
         p.toggle(now); // kullanıcı molayı duraklattı
-        assert!(!p.set_user_present(true, now));
-        assert!(!p.set_user_present(false, now), "duraklatılmış mola kendiliğinden başlamaz");
+        assert_eq!(p.set_user_present(true, now), None);
+        assert_eq!(
+            p.set_user_present(false, now),
+            None,
+            "duraklatılmış mola kendiliğinden başlamaz"
+        );
         assert_eq!(p.timer().state(), TimerState::Paused);
     }
 
@@ -400,7 +470,7 @@ mod tests {
         p.set_user_present(true, now);
         p.toggle(now);
         assert!(!p.is_held() && !p.is_active());
-        assert!(!p.set_user_present(false, now + MIN), "duraklatılmış kalmalı");
+        assert_eq!(p.set_user_present(false, now + MIN), None, "duraklatılmış kalmalı");
         p.toggle(now + MIN);
         assert!(p.timer().is_running());
     }
