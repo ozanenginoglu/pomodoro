@@ -14,7 +14,8 @@ pub enum PixelFormat {
     Yuyv,
     /// Y düzlemi + iç içe UV düzlemi (4:2:0).
     Nv12,
-    /// Y, U ve V düzlemleri (4:2:0; YU12).
+    /// Y, U ve V düzlemleri (4:2:0; YU12). Yalnızca V4L2 kameraları verir.
+    #[cfg_attr(windows, allow(dead_code))]
     I420,
     Mjpeg,
     Gray,
