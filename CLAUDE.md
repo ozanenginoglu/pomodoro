@@ -24,7 +24,7 @@ XDG_CONFIG_HOME=/tmp/x cargo run              # throwaway config dir
 ```
 
 - There is no `rustfmt.toml`, and the committed code is in a compact hand-formatted style. Do **not** run `cargo fmt` over the tree; it rewrites untouched files. Format only the files you changed: `rustfmt --edition 2024 --config use_small_heuristics=Max <files>`. rustfmt follows `mod` declarations, so passing `main.rs` or a `mod.rs` also reformats every module below it; check `git status` afterwards and restore files you didn't touch.
-- The Windows target isn't installed locally (Arch `rust` package, no rustup). `src/platform/windows.rs` is only compiled and clippy-checked by CI (`.github/workflows/ci.yml`, Linux + Windows on every push to any branch; a `v*` tag publishes a GitHub release with both binaries). Mirror the exact `windows` 0.62 signatures from `~/.cargo/registry/src/*/windows-0.62.2` when writing Win32 calls.
+- The Windows target isn't installed locally (Arch `rust` package, no rustup). `src/platform/windows.rs` is only compiled and clippy-checked by CI (`.github/workflows/ci.yml`, Linux + Windows on every push to `main`; a `v*` tag publishes a GitHub release with both binaries). Mirror the exact `windows` 0.62 signatures from `~/.cargo/registry/src/*/windows-0.62.2` when writing Win32 calls.
 
 ### Testing GUI behavior without touching the user's session
 
