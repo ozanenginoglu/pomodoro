@@ -35,6 +35,8 @@ pub enum Command {
     Mode,
     /// Ayarlar panelini aç.
     Settings,
+    /// Uygulamayı kapat.
+    Quit,
 }
 
 impl Command {
@@ -45,6 +47,7 @@ impl Command {
             "skip" => Command::Skip,
             "mode" => Command::Mode,
             "settings" => Command::Settings,
+            "quit" => Command::Quit,
             _ => return None,
         })
     }
@@ -105,6 +108,11 @@ pub fn listen() -> io::Result<Bind> {
                     }
                     None => crate::i18n::unknown_format(rest.trim()),
                 }
+            } else if let Some(Command::Quit) = Command::parse(line) {
+                // Yanıt önce yazılır: uygulama kapanırken istemci yanıtsız kalmasın.
+                let _ = conn.get_mut().write_all(b"ok\n");
+                let _ = tx.send_blocking(Command::Quit);
+                break;
             } else if let Some(command) = Command::parse(line) {
                 match tx.send_blocking(command) {
                     Ok(()) => "ok".into(),
@@ -136,6 +144,7 @@ mod tests {
     fn parses_known_commands_only() {
         assert_eq!(Command::parse("toggle"), Some(Command::Toggle));
         assert_eq!(Command::parse("settings"), Some(Command::Settings));
+        assert_eq!(Command::parse("quit"), Some(Command::Quit));
         assert_eq!(Command::parse("status"), None, "status sunucu iş parçacığında yanıtlanır");
         assert_eq!(Command::parse("TOGGLE"), None);
     }

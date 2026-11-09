@@ -80,6 +80,7 @@ pub struct Strings {
     pub always_on_top: &'static str,
     pub start_on_sign_in: &'static str,
     pub language: &'static str,
+    pub quit: &'static str,
     pub unit_minutes: &'static str,
     pub unit_rounds: &'static str,
 
@@ -136,6 +137,7 @@ static EN: Strings = Strings {
     always_on_top: "Always on top",
     start_on_sign_in: "Start on sign-in",
     language: "Language",
+    quit: "Quit Pomodoro",
     unit_minutes: "min",
     unit_rounds: "rounds",
 
@@ -165,6 +167,7 @@ Commands (sent to the running widget):
   skip       Skip to the next round
   mode       Switch between Pomodoro and meeting mode
   settings   Open the settings panel
+  quit       Close the widget
   status [--format xmobar|waybar|plain]
              Print the current state (xmobar by default on Linux;
              empty if the widget isn't running)
@@ -202,6 +205,7 @@ static TR: Strings = Strings {
     always_on_top: "Her zaman üstte",
     start_on_sign_in: "Oturum açılınca başlat",
     language: "Dil",
+    quit: "Pomodoro'yu kapat",
     unit_minutes: "dk",
     unit_rounds: "tur",
 
@@ -231,6 +235,7 @@ Komutlar (çalışan widget'a gönderilir):
   skip       Sonraki evreye geç
   mode       Pomodoro ↔ toplantı
   settings   Ayarlar panelini aç
+  quit       Widget'ı kapat
   status [--format xmobar|waybar|plain]
              Durumu yazdır (Linux'ta varsayılan xmobar;
              widget kapalıysa boş)

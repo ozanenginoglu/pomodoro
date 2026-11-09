@@ -251,6 +251,7 @@ impl Widget {
             Command::Skip => self.skip(cx),
             Command::Mode => self.switch_mode(cx),
             Command::Settings => self.open_settings(cx),
+            Command::Quit => cx.quit(),
         }
     }
 

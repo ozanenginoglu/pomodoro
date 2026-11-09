@@ -24,7 +24,9 @@ actions!(settings, [CloseSettings]);
 const CONTEXT: &str = "Settings";
 const WIDTH: f32 = 320.0;
 /// Windows'ta fazladan "Oturum açılınca başlat" satırı var.
-const HEIGHT: f32 = if cfg!(windows) { 791.0 } else { 757.0 };
+const HEIGHT: f32 = if cfg!(windows) { 791.0 } else { 757.0 } + QUIT_HEIGHT;
+/// Alttaki "kapat" butonu ve üstündeki boşluk.
+const QUIT_HEIGHT: f32 = 46.0;
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("escape", CloseSettings, Some(CONTEXT))]);
@@ -350,6 +352,26 @@ fn close_button(cx: &mut Context<SettingsPanel>) -> impl IntoElement {
         .child(svg().path(icon::CLOSE).size(px(14.0)).text_color(theme::muted()))
 }
 
+/// Uygulamayı kapatan buton (panelin en altında).
+fn quit_button(cx: &mut Context<SettingsPanel>) -> impl IntoElement {
+    div().pt(px(14.0)).child(
+        div()
+            .id("quit")
+            .h(px(32.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(theme::ring_track())
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .text_color(theme::muted())
+            .hover(|s| s.bg(theme::button_hover()).text_color(theme::text()))
+            .on_click(cx.listener(|_, _, _, cx| cx.quit()))
+            .child(t().quit),
+    )
+}
+
 impl Render for SettingsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = self.config.read(cx).clone();
@@ -530,7 +552,8 @@ impl Render for SettingsPanel {
                         c.language,
                         |c, v| c.language = v,
                         cx,
-                    )),
+                    ))
+                    .child(quit_button(cx)),
             )
     }
 }

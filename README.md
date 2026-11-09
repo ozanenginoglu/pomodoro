@@ -51,7 +51,7 @@ On Windows, the MSVC toolchain needs nothing extra.
 
 ## Usage
 
-Run `pomodoro` to open the widget. Only one widget runs at a time; starting it again does nothing.
+Run `pomodoro` to open the widget. Only one widget runs at a time; starting it again does nothing. To close it, use **Quit Pomodoro** at the bottom of the settings panel or run `pomodoro quit`. The timers aren't saved, so a running round is lost.
 
 Hover over the circle to show the controls:
 
@@ -119,6 +119,7 @@ pomodoro reset        restart the current round
 pomodoro skip         skip to the next round
 pomodoro mode         switch between Pomodoro and meeting mode
 pomodoro settings     open the settings panel
+pomodoro quit         close the widget
 pomodoro status [--format xmobar|waybar|plain]
                       print the current state (empty if the widget isn't running)
 ```
