@@ -9,7 +9,7 @@ Runs on **Linux (X11 and Wayland)** and **Windows**. It's written in Rust with [
 | | |
 |---|---|
 | **Pomodoro** | Work, short break and long break rounds. The dots under the clock show where you are in the cycle. Breaks can start on their own when a work round ends. |
-| **Break guard** | Optional. A break only counts down while you're away from the computer. While the camera sees you at the desk, it waits, and an eye on the widget watches you until you step away. |
+| **Break guard** | Optional. A break only counts down while you're away from the computer. While the camera sees you at the desk, it waits, and a little tomato on the widget glares at you until you step away. |
 | **Meeting** | Type a length (`45`, `1h30`) or an end time (`14:30`) and it counts down. The ring turns yellow, then orange as the end gets close, and red when the meeting runs over. |
 | **Alerts** | A desktop notification and a short bell chime at the end of each round and at each meeting stage. |
 | **Status bar** | `pomodoro status` prints the current state for xmobar, waybar or plain text. |
@@ -86,12 +86,12 @@ A meeting can be up to 12 hours long. Pomodoro keeps running in the background w
 
 ### Break guard
 
-The break guard uses your camera, so it's off until you switch on *Pause breaks while I'm at the desk* in the settings panel and pick a camera with the arrows next to *Camera*. When a break starts, an eye opens on the widget. The break only counts down while you're away:
+The break guard uses your camera, so it's off until you switch on *Pause breaks while I'm at the desk* in the settings panel and pick a camera with the arrows next to *Camera*. When a break starts, a little tomato appears on the widget. The break only counts down while you're away:
 
-![Three widgets during a short break: the eye wide open and looking down at the cursor while the break waits; the eye narrowed under a frowning brow, looking right at the cursor; and the eye half-closed and relaxed while the break counts down](docs/break-guard.png)
+![Three widgets during a short break: the tomato smiling and looking down at the cursor while the break waits; the tomato dark red and angry, frowning and gritting its teeth with steam rising from its top; and the tomato calm and smiling again while the break counts down](docs/break-guard.png)
 
-- **You're still at the desk** (the camera sees your face, or you typed or moved the mouse in the last 10 seconds): the break waits. The eye opens wide, looks at you (or at your cursor) and, after a few seconds, frowns.
-- **You stepped away** (no face for 3 seconds and no keyboard or mouse input): the eye relaxes and looks around, and the break counts down.
+- **You're still at the desk** (the camera sees your face, or you typed or moved the mouse in the last 10 seconds): the break waits. The tomato looks at you (or at your cursor) and, after a few seconds, gets angry: it turns dark red, frowns, grits its teeth and steams.
+- **You stepped away** (no face for 3 seconds and no keyboard or mouse input): the tomato calms down, sways gently and looks around, and the break counts down.
 
 So a 5-minute break ends after 5 minutes away from the computer, and those minutes have to be in one piece:
 
@@ -106,7 +106,7 @@ You can still pause the break or skip it with the controls.
 - A face has to be visible for 1 second to count as present, and gone for 3 seconds to count as away, so briefly turning your head doesn't start the break.
 - If the camera can't be opened or stops sending frames, the guard goes by keyboard and mouse alone (sitting still then counts as away) and tries the camera again every 10 seconds.
 
-Faces are found with the [UltraFace](https://github.com/Linzaer/Ultra-Light-Fast-Generic-Face-Detector-1MB) RFB-320 model (MIT, built into the binary) running on [tract](https://github.com/sonos/tract). Cameras are read through V4L2 on Linux (YUYV, NV12, I420, MJPEG, grey and RGB; loopback devices such as DroidCam work too) and Media Foundation on Windows. Keyboard and mouse activity comes from the system's idle time: the MIT-SCREEN-SAVER extension on X11, the `ext-idle-notify-v1` protocol on Wayland and `GetLastInputInfo` on Windows. The eye looks at your face when the camera sees it; otherwise it follows the cursor on X11 and Windows and looks straight ahead on Wayland, because Wayland doesn't tell apps where the cursor is.
+Faces are found with the [UltraFace](https://github.com/Linzaer/Ultra-Light-Fast-Generic-Face-Detector-1MB) RFB-320 model (MIT, built into the binary) running on [tract](https://github.com/sonos/tract). Cameras are read through V4L2 on Linux (YUYV, NV12, I420, MJPEG, grey and RGB; loopback devices such as DroidCam work too) and Media Foundation on Windows. Keyboard and mouse activity comes from the system's idle time: the MIT-SCREEN-SAVER extension on X11, the `ext-idle-notify-v1` protocol on Wayland and `GetLastInputInfo` on Windows. The tomato looks at your face when the camera sees it; otherwise it follows the cursor on X11 and Windows and looks straight ahead on Wayland, because Wayland doesn't tell apps where the cursor is.
 
 ### Command line
 

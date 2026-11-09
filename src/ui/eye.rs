@@ -1,10 +1,11 @@
-//! Mola bekçisi göz.
+//! Mola bekçisi domates.
 //!
-//! Mola sürerken dairede bir göz belirir:
-//! - Kullanıcı uzaktayken (mola işliyor) gevşektir: göz kapakları yarı
-//!   kapalı, ara sıra etrafa bakınır.
-//! - Kullanıcı bilgisayar başındayken (mola tutuluyor) iri açılır, imleci
-//!   izler ve birkaç saniye sonra kaşlarını çatar.
+//! Mola sürerken dairede küçük bir domates belirir:
+//! - Kullanıcı uzaktayken (mola işliyor) memnundur: hafifçe sallanır,
+//!   yaprakları oynar, gözleri biraz kısık, ara sıra etrafa bakınır.
+//! - Kullanıcı bilgisayar başındayken (mola tutuluyor) gözlerini açar, imleci
+//!   izler ve birkaç saniye sonra sinirlenir: kıpkırmızı kesilir, kaşlarını
+//!   çatar, dişlerini sıkar, yaprakları dikleşip titrer, tepesinden buhar çıkar.
 //!
 //! Hareket modeli (`Eye`) zamanı parametre olarak alır ve test edilir; çizim,
 //! halka gibi `tiny-skia` ile gerçek piksel çözünürlüğünde yapılır.
@@ -17,9 +18,13 @@ use gpui::{
 };
 use image::{Frame, RgbaImage};
 use smallvec::smallvec;
-use tiny_skia::{FillRule, LineCap, Mask, Paint, Path, PathBuilder, Pixmap, Stroke, Transform};
+use tiny_skia::{
+    FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, Rect, Stroke, Transform,
+};
 
-/// Gözün ruh hali.
+use super::theme;
+
+/// Domatesin ruh hali.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mood {
     /// Kullanıcı uzakta, mola işliyor.
@@ -31,45 +36,53 @@ pub enum Mood {
 /// Çizilecek an.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pose {
-    /// Göz kapaklarının açıklığı, 0 (kapalı) ..= 1.
+    /// Gözlerin açıklığı, 0 (kapalı) ..= 1.
     pub open: f32,
     /// Bakış yönü, her eksende -1 ..= 1 (y aşağı).
     pub look: [f32; 2],
-    /// Kaş çatma, 0 ..= 1.
-    pub frown: f32,
+    /// Sinir, 0 ..= 1.
+    pub anger: f32,
+    /// Domates belireli beri geçen süre (saniye); sallanma, titreme ve buhar
+    /// bununla ilerler.
+    pub time: f32,
 }
+
+/// Aynıysa yeniden çizmeye gerek olmayan poz anahtarı.
+pub type PoseKey = [i32; 5];
 
 impl Pose {
     /// Gözle fark edilmeyecek kadar küçük değişiklikleri yok sayan karşılaştırma
-    /// anahtarı: aynıysa yeniden çizmeye gerek yok.
-    pub fn quantized(&self) -> [i32; 4] {
+    /// anahtarı. Zaman, göz kare hızına (~30 fps) yuvarlanır.
+    pub fn quantized(&self) -> PoseKey {
         let q = |v: f32| (v * 512.0).round() as i32;
-        [q(self.open), q(self.look[0]), q(self.look[1]), q(self.frown)]
+        [q(self.open), q(self.look[0]), q(self.look[1]), q(self.anger), (self.time * 30.0) as i32]
     }
 }
 
 const BLINK: Duration = Duration::from_millis(160);
-/// Bu kadar süre bilgisayar başında kalınca kaşlar çatılmaya başlar…
-const FROWN_AFTER: Duration = Duration::from_secs(4);
-/// …ve bu sürede tamamen çatılır.
-const FROWN_RAMP: Duration = Duration::from_secs(3);
-const RELAXED_OPEN: f32 = 0.55;
+/// Bu kadar süre bilgisayar başında kalınca sinirlenmeye başlar…
+const ANGER_AFTER: Duration = Duration::from_secs(4);
+/// …ve bu sürede tamamen sinirlenir.
+const ANGER_RAMP: Duration = Duration::from_secs(3);
+/// Uzaktayken gözler biraz kısık: memnun bir bakış.
+const RELAXED_OPEN: f32 = 0.8;
 
 pub struct Eye {
     open: f32,
     look: [f32; 2],
-    frown: f32,
+    anger: f32,
     target_look: [f32; 2],
     next_glance: Instant,
     blink_start: Option<Instant>,
     next_blink: Instant,
     watching_since: Option<Instant>,
+    born: Instant,
     last: Instant,
     rng: fastrand::Rng,
 }
 
 impl Eye {
-    /// Kapalı başlar; ilk güncellemelerle açılır.
+    /// Gözler kapalı başlar; ilk güncellemelerle açılır.
     pub fn new(now: Instant) -> Self {
         Self::with_rng(now, fastrand::Rng::new())
     }
@@ -79,25 +92,26 @@ impl Eye {
         Self {
             open: 0.0,
             look: [0.0; 2],
-            frown: 0.0,
+            anger: 0.0,
             target_look: [0.0; 2],
             next_glance: now + Duration::from_millis(800),
             blink_start: None,
             next_blink,
             watching_since: None,
+            born: now,
             last: now,
             rng,
         }
     }
 
-    /// Her karede çağrılır. `cursor`: imlecin gözden yönü (-1 ..= 1); yoksa
-    /// göz kullanıcıya, yani düz ileri bakar.
+    /// Her karede çağrılır. `cursor`: imlecin gözlerden yönü (-1 ..= 1); yoksa
+    /// domates kullanıcıya, yani düz ileri bakar.
     pub fn update(&mut self, now: Instant, mood: Mood, cursor: Option<[f32; 2]>) {
         // Uzun bir aradan (askı, gizli pencere) sonra tek adımda sıçramasın.
         let dt = now.saturating_duration_since(self.last).as_secs_f32().min(0.1);
         self.last = now;
 
-        let (open, frown, look, look_rate) = match mood {
+        let (open, anger, look, look_rate) = match mood {
             Mood::Relaxed => {
                 self.watching_since = None;
                 if now >= self.next_glance {
@@ -109,14 +123,14 @@ impl Eye {
             }
             Mood::Watching => {
                 let since = *self.watching_since.get_or_insert(now);
-                let watched = now.saturating_duration_since(since).saturating_sub(FROWN_AFTER);
-                let frown = (watched.as_secs_f32() / FROWN_RAMP.as_secs_f32()).min(1.0);
+                let watched = now.saturating_duration_since(since).saturating_sub(ANGER_AFTER);
+                let anger = (watched.as_secs_f32() / ANGER_RAMP.as_secs_f32()).min(1.0);
                 let look = cursor.map_or([0.0; 2], |c| c.map(|v| v.clamp(-1.0, 1.0)));
-                (1.0, frown, look, 10.0)
+                (1.0, anger, look, 10.0)
             }
         };
         self.open = approach(self.open, open, 6.0, dt);
-        self.frown = approach(self.frown, frown, 4.0, dt);
+        self.anger = approach(self.anger, anger, 4.0, dt);
         for (value, target) in self.look.iter_mut().zip(look) {
             *value = approach(*value, target, look_rate, dt);
         }
@@ -132,7 +146,12 @@ impl Eye {
             let t = now.saturating_duration_since(start).as_secs_f32() / BLINK.as_secs_f32();
             if t < 1.0 { 1.0 - (PI * t).sin() } else { 1.0 }
         });
-        Pose { open: self.open * blink, look: self.look, frown: self.frown }
+        Pose {
+            open: self.open * blink,
+            look: self.look,
+            anger: self.anger,
+            time: now.saturating_duration_since(self.born).as_secs_f32(),
+        }
     }
 
     /// Rastgele bir bakış; arada bir düz ileri.
@@ -155,8 +174,8 @@ fn approach(value: f32, target: f32, rate: f32, dt: f32) -> f32 {
     value + (target - value) * (1.0 - (-rate * dt).exp())
 }
 
-/// İmlecin göze göre yönü: yakındayken küçük, uzaklaştıkça 1'e yaklaşır.
-/// `dx`, `dy`: imlecin göz merkezine uzaklığı; `reach`: yarı yola gelinen mesafe.
+/// İmlecin gözlere göre yönü: yakındayken küçük, uzaklaştıkça 1'e yaklaşır.
+/// `dx`, `dy`: imlecin gözlerin ortasına uzaklığı; `reach`: yarı yola gelinen mesafe.
 pub fn cursor_direction(dx: f32, dy: f32, reach: f32) -> [f32; 2] {
     let distance = (dx * dx + dy * dy).sqrt();
     if distance < f32::EPSILON {
@@ -167,14 +186,6 @@ pub fn cursor_direction(dx: f32, dy: f32, reach: f32) -> [f32; 2] {
 }
 
 // ---- Çizim -------------------------------------------------------------
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct EyeStyle {
-    pub sclera: Hsla,
-    pub iris: Hsla,
-    pub pupil: Hsla,
-    pub line: Hsla,
-}
 
 #[derive(Default)]
 pub struct EyeCache {
@@ -187,12 +198,11 @@ pub type SharedEyeCache = Rc<RefCell<EyeCache>>;
 #[derive(Clone, Copy, PartialEq)]
 struct Key {
     pixels: [u32; 2],
-    pose: [i32; 4],
-    style: [u32; 4],
+    pose: PoseKey,
 }
 
-/// Gözü bulunduğu alana çizer.
-pub fn eye(cache: SharedEyeCache, pose: Pose, style: EyeStyle) -> impl IntoElement {
+/// Domatesi bulunduğu alana çizer.
+pub fn eye(cache: SharedEyeCache, pose: Pose) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, _| {
@@ -204,7 +214,7 @@ pub fn eye(cache: SharedEyeCache, pose: Pose, style: EyeStyle) -> impl IntoEleme
             if pixels.contains(&0) {
                 return;
             }
-            let image = cache.borrow_mut().get(window, pixels, pose, style);
+            let image = cache.borrow_mut().get(window, pixels, pose);
             if let Some(image) = image {
                 let bounds =
                     Bounds::new(bounds.origin, size(bounds.size.width, bounds.size.height));
@@ -221,15 +231,10 @@ impl EyeCache {
         window: &mut Window,
         pixels: [u32; 2],
         pose: Pose,
-        style: EyeStyle,
     ) -> Option<Arc<RenderImage>> {
-        let key = Key {
-            pixels,
-            pose: pose.quantized(),
-            style: [style.sclera, style.iris, style.pupil, style.line].map(pack),
-        };
+        let key = Key { pixels, pose: pose.quantized() };
         if self.key != Some(key) {
-            let image = rasterize(pixels, window.scale_factor(), pose, style)?;
+            let image = rasterize(pixels, pose)?;
             if let Some(old) = self.image.replace(image) {
                 let _ = window.drop_image(old);
             }
@@ -239,10 +244,13 @@ impl EyeCache {
     }
 }
 
-fn pack(c: Hsla) -> u32 {
-    let c = c.to_rgb();
-    u32::from_be_bytes([c.r, c.g, c.b, c.a].map(|v| (v * 255.0).round() as u8))
-}
+/// Çizim, bu boyutta bir tasarım alanında yapılır; ölçek alana sığacak
+/// biçimde seçilir. Domatesin gövdesi alanın yatay ortasında, `y = 12`'de.
+pub const VIEW: [f32; 2] = [80.0, 92.0];
+/// Tasarım alanının üst kenarı (buhar buraya kadar yükselir).
+const VIEW_TOP: f32 = -40.0;
+/// Gövdenin dikey yarıçapı; yatayda biraz daha geniştir.
+const BODY: f32 = 34.0;
 
 fn paint(color: Hsla, alpha: f32) -> Paint<'static> {
     let c = color.to_rgb();
@@ -257,114 +265,174 @@ fn paint(color: Hsla, alpha: f32) -> Paint<'static> {
     paint
 }
 
-/// Göz kapaklarının biçimi. Açıkken badem; kapanırken iki kapak aşağı
-/// kıvrık tek bir çizgide ("‿") buluşur.
-struct Lids {
-    upper: Path,
-    lower: Path,
-    almond: Path,
+fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
+    let (a, b) = (a.to_rgb(), b.to_rgb());
+    let l = |x: f32, y: f32| x + (y - x) * t;
+    gpui::Rgba { r: l(a.r, b.r), g: l(a.g, b.g), b: l(a.b, b.b), a: l(a.a, b.a) }.into()
 }
 
-fn lids(cx: f32, cy: f32, a: f32, b: f32, open: f32, squint: f32) -> Option<Lids> {
-    // Kübik eğride iki kontrol noktası aynı yükseklikteyken tepe, kontrol
-    // yüksekliğinin 3/4'üne çıkar.
-    let closed = 0.35 * b * (1.0 - open);
-    let upper_peak = -b * open * (1.0 - 0.45 * squint) + closed;
-    let lower_peak = 0.7 * b * open + closed;
-    let (left, right) = (cx - a, cx + a);
-    let k = a * 0.45;
-    let curve = |builder: &mut PathBuilder, from: f32, to: f32, peak: f32| {
-        let y = cy + peak / 0.75;
-        let dir = (to - from).signum();
-        builder.cubic_to(from + dir * (a - k), y, to - dir * (a - k), y, to, cy);
-    };
-
-    let mut upper = PathBuilder::new();
-    upper.move_to(left, cy);
-    curve(&mut upper, left, right, upper_peak);
-    let mut lower = PathBuilder::new();
-    lower.move_to(right, cy);
-    curve(&mut lower, right, left, lower_peak);
-    let mut almond = PathBuilder::new();
-    almond.move_to(left, cy);
-    curve(&mut almond, left, right, upper_peak);
-    curve(&mut almond, right, left, lower_peak);
-    almond.close();
-    Some(Lids { upper: upper.finish()?, lower: lower.finish()?, almond: almond.finish()? })
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
 }
 
-fn rasterize(
-    pixels: [u32; 2],
-    scale: f32,
-    pose: Pose,
-    style: EyeStyle,
-) -> Option<Arc<RenderImage>> {
-    let [w, h] = pixels;
-    let mut pixmap = Pixmap::new(w, h)?;
-    let (wf, hf) = (w as f32, h as f32);
-    let identity = Transform::identity();
-    let line = 1.8 * scale;
+fn oval(cx: f32, cy: f32, rx: f32, ry: f32) -> Option<Path> {
+    PathBuilder::from_oval(Rect::from_ltrb(cx - rx, cy - ry, cx + rx, cy + ry)?)
+}
 
-    // Göz, alanın alt kısmında; üstte kaşa yer kalır.
-    let a = wf * 0.42;
-    let b = (hf * 0.3).min(a * 0.62);
-    let (cx, cy) = (wf / 2.0, hf * 0.62);
-    let lids = lids(cx, cy, a, b, pose.open, pose.frown)?;
-
-    if pose.open > 0.02 {
-        let mut mask = Mask::new(w, h)?;
-        mask.fill_path(&lids.almond, FillRule::Winding, true, identity);
-        pixmap.fill_path(
-            &lids.almond,
-            &paint(style.sclera, 1.0),
-            FillRule::Winding,
-            identity,
-            None,
-        );
-
-        let iris_r = b * 0.62;
-        let ix = cx + pose.look[0] * (a - iris_r) * 0.8;
-        let iy = cy + pose.look[1] * b * 0.45;
-        let circle = |x: f32, y: f32, r: f32| PathBuilder::from_circle(x, y, r);
-        let fill = |pixmap: &mut Pixmap, path: Option<Path>, paint: Paint| {
-            if let Some(path) = path {
-                pixmap.fill_path(&path, &paint, FillRule::Winding, identity, Some(&mask));
-            }
-        };
-        fill(&mut pixmap, circle(ix, iy, iris_r), paint(style.iris, 1.0));
-        fill(&mut pixmap, circle(ix, iy, iris_r * 0.5), paint(style.pupil, 1.0));
-        fill(
-            &mut pixmap,
-            circle(ix - iris_r * 0.3, iy - iris_r * 0.32, iris_r * 0.17),
-            paint(style.sclera, 0.9),
-        );
+fn polyline(points: &[(f32, f32)]) -> Option<Path> {
+    let mut builder = PathBuilder::new();
+    let (&(x, y), rest) = points.split_first()?;
+    builder.move_to(x, y);
+    for &(x, y) in rest {
+        builder.line_to(x, y);
     }
+    builder.finish()
+}
 
-    let stroke = Stroke { width: line, line_cap: LineCap::Round, ..Stroke::default() };
-    pixmap.stroke_path(&lids.upper, &paint(style.line, 1.0), &stroke, identity, None);
-    pixmap.stroke_path(&lids.lower, &paint(style.line, 0.55), &stroke, identity, None);
+/// Tasarım alanı koordinatlarında çizen küçük yardımcı.
+struct Painter {
+    pixmap: Pixmap,
+    transform: Transform,
+}
 
-    // Çatık kaş: ortada aşağı inen bir "V".
-    if pose.frown > 0.02 {
-        // Kaş, kısılan göz kapağıyla birlikte aşağı iner.
-        let top = cy - b * (1.0 - 0.35 * pose.frown) - hf * 0.1;
-        let dip = pose.frown * b * 0.6;
-        let mut brow = PathBuilder::new();
-        brow.move_to(cx - a * 0.8, top - dip * 0.3);
-        brow.line_to(cx, top + dip);
-        brow.line_to(cx + a * 0.8, top - dip * 0.3);
-        if let Some(brow) = brow.finish() {
-            let stroke = Stroke { width: line * 2.0, line_cap: LineCap::Round, ..stroke.clone() };
-            pixmap.stroke_path(&brow, &paint(style.line, pose.frown), &stroke, identity, None);
+impl Painter {
+    fn fill(&mut self, path: Option<Path>, color: Hsla, alpha: f32) {
+        if let Some(path) = path
+            && alpha > 0.0
+        {
+            let paint = paint(color, alpha);
+            self.pixmap.fill_path(&path, &paint, FillRule::Winding, self.transform, None);
         }
     }
 
-    let mut data = pixmap.take();
+    fn stroke(&mut self, path: Option<Path>, color: Hsla, alpha: f32, width: f32) {
+        if let Some(path) = path
+            && alpha > 0.0
+        {
+            let stroke = Stroke {
+                width,
+                line_cap: LineCap::Round,
+                line_join: LineJoin::Round,
+                ..Stroke::default()
+            };
+            self.pixmap.stroke_path(&path, &paint(color, alpha), &stroke, self.transform, None);
+        }
+    }
+}
+
+fn rasterize(pixels: [u32; 2], pose: Pose) -> Option<Arc<RenderImage>> {
+    let [w, h] = pixels;
+    let (wf, hf) = (w as f32, h as f32);
+    let unit = (wf / VIEW[0]).min(hf / VIEW[1]);
+    let transform = Transform::from_row(
+        unit,
+        0.0,
+        0.0,
+        unit,
+        wf / 2.0,
+        (hf - VIEW[1] * unit) / 2.0 - VIEW_TOP * unit,
+    );
+    let mut p = Painter { pixmap: Pixmap::new(w, h)?, transform };
+    draw(&mut p, pose);
+
+    let mut data = p.pixmap.take();
     for pixel in data.as_chunks_mut::<4>().0 {
         swap_rgba_pa_to_bgra(pixel);
     }
     let buffer = RgbaImage::from_raw(w, h, data)?;
     Some(Arc::new(RenderImage::new(smallvec![Frame::new(buffer)])))
+}
+
+fn draw(p: &mut Painter, pose: Pose) {
+    let (an, t) = (pose.anger.clamp(0.0, 1.0), pose.time);
+    let calm = 1.0 - an;
+    let face = theme::surface();
+    let light = theme::text();
+    // Sakinken hafifçe aşağı yukarı sallanır.
+    let cy = 12.0 + (t * 1.6).sin() * 1.2 * calm;
+
+    // Gölge ve gövde.
+    p.fill(oval(0.0, 47.0, 26.0, 3.0), gpui::black(), 0.25);
+    let body = mix(theme::tomato(), theme::tomato_angry(), an);
+    p.fill(oval(0.0, cy, BODY + 3.0, BODY), body, 1.0);
+    let shine = oval(0.0, 0.0, 8.0, 4.5)
+        .and_then(|o| o.transform(Transform::from_rotate(-34.0).post_translate(-16.0, cy - 15.0)));
+    p.fill(shine, light, 0.35);
+
+    // Yapraklar ve sap: sakinken rüzgârda sallanır, sinirlenince dikleşip titrer.
+    let sway = (t * 1.8).sin() * 0.16 * calm + (t * 45.0).sin() * 0.04 * an;
+    let crown = Transform::from_rotate(sway.to_degrees()).post_translate(0.0, cy - BODY + 3.0);
+    for i in 0..5 {
+        let a = i as f32 * 2.0 * PI / 5.0 + 0.3;
+        let len = lerp(8.0, 10.0, an);
+        let place = Transform::from_rotate((a * 0.25).to_degrees())
+            .post_translate(a.cos() * len, a.sin() * 3.0 - an * 2.0)
+            .post_concat(crown);
+        p.fill(oval(0.0, 0.0, len, 2.8).and_then(|o| o.transform(place)), theme::leaf(), 1.0);
+    }
+    p.stroke(
+        polyline(&[(0.0, 0.0), (1.5, -8.0)]).and_then(|s| s.transform(crown)),
+        theme::leaf(),
+        1.0,
+        3.0,
+    );
+
+    // Gözler.
+    let open = pose.open.clamp(0.12, 1.0);
+    for side in [-1.0, 1.0] {
+        let x = side * 12.0 + pose.look[0] * 3.0;
+        let y = cy + 3.0 + pose.look[1] * 2.5;
+        p.fill(oval(x, y, 3.8, 3.8 * open), face, 1.0);
+        if pose.open > 0.5 {
+            p.fill(PathBuilder::from_circle(x - 1.3, y - 1.5, 1.2), light, 1.0);
+        }
+        // Yanaklar sakinken pembe; kaşlar sinirlenince çatılır.
+        p.fill(oval(side * 22.0, cy + 11.0, 6.0, 3.4), theme::blush(), 0.6 * calm);
+        let brow = [(side * 18.0, cy - 8.0), (side * 7.0, cy - 5.0 + 3.0 * an)];
+        p.stroke(polyline(&brow), face, an, 2.6);
+    }
+
+    // Ağız: gülümseme sinirlendikçe sıkılmış dişlere döner.
+    let smile = ((0.45 - an) / 0.15).clamp(0.0, 1.0);
+    let mut mouth = PathBuilder::new();
+    mouth.move_to(-6.0, cy + 12.0);
+    mouth.quad_to(0.0, cy + 17.0, 6.0, cy + 12.0);
+    p.stroke(mouth.finish(), face, smile, 2.2);
+    let teeth = ((an - 0.35) / 0.15).clamp(0.0, 1.0);
+    if teeth > 0.0 {
+        p.fill(rounded_rect(-8.0, cy + 11.0, 16.0, 6.0, 2.0), light, teeth);
+        p.stroke(polyline(&[(-8.0, cy + 14.0), (8.0, cy + 14.0)]), face, teeth, 1.0);
+        for x in [-3.0, 2.0] {
+            p.stroke(polyline(&[(x, cy + 11.0), (x, cy + 17.0)]), face, teeth, 1.0);
+        }
+    }
+
+    // Buhar: tepenin iki yanından yükselip dağılan bulutçuklar.
+    if an > 0.01 {
+        for (k, side) in [-1.0f32, 1.0].into_iter().enumerate() {
+            for i in 0..2 {
+                let u = (t * 0.9 + i as f32 * 0.5 + k as f32 * 0.25).fract();
+                let (x, y) = (side * (15.0 + u * 8.0), cy - BODY + 2.0 - u * 12.0);
+                let puff = PathBuilder::from_circle(x, y, 2.5 + u * 3.5);
+                p.fill(puff, light, an * (1.0 - u) * 0.8);
+            }
+        }
+    }
+}
+
+fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
+    let mut b = PathBuilder::new();
+    b.move_to(x + r, y);
+    b.line_to(x + w - r, y);
+    b.quad_to(x + w, y, x + w, y + r);
+    b.line_to(x + w, y + h - r);
+    b.quad_to(x + w, y + h, x + w - r, y + h);
+    b.line_to(x + r, y + h);
+    b.quad_to(x, y + h, x, y + h - r);
+    b.line_to(x, y + r);
+    b.quad_to(x, y, x + r, y);
+    b.close();
+    b.finish()
 }
 
 #[cfg(test)]
@@ -397,18 +465,18 @@ mod tests {
     }
 
     #[test]
-    fn frowns_only_after_watching_for_a_while() {
+    fn gets_angry_only_after_watching_for_a_while() {
         let mut now = Instant::now();
         let mut eye = eye_at(now);
         run(&mut eye, &mut now, Mood::Watching, None, Duration::from_secs(3));
-        assert!(eye.frown < 0.01, "{}", eye.frown);
+        assert!(eye.anger < 0.01, "{}", eye.anger);
         run(&mut eye, &mut now, Mood::Watching, None, Duration::from_secs(6));
-        assert!(eye.frown > 0.95, "{}", eye.frown);
+        assert!(eye.anger > 0.95, "{}", eye.anger);
         // Kullanıcı uzaklaşınca yatışır; dönünce saymaya baştan başlar.
         run(&mut eye, &mut now, Mood::Relaxed, None, Duration::from_secs(2));
-        assert!(eye.frown < 0.01);
+        assert!(eye.anger < 0.01);
         run(&mut eye, &mut now, Mood::Watching, None, Duration::from_secs(3));
-        assert!(eye.frown < 0.01);
+        assert!(eye.anger < 0.01);
     }
 
     #[test]
@@ -452,6 +520,15 @@ mod tests {
     }
 
     #[test]
+    fn pose_time_advances_from_birth() {
+        let now = Instant::now();
+        let eye = eye_at(now);
+        let later = eye.pose(now + Duration::from_millis(1500));
+        assert!((later.time - 1.5).abs() < 1e-3);
+        assert_ne!(eye.pose(now).quantized(), later.quantized());
+    }
+
+    #[test]
     fn cursor_direction_saturates_with_distance() {
         assert_eq!(cursor_direction(0.0, 0.0, 100.0), [0.0, 0.0]);
         let near = cursor_direction(10.0, 0.0, 100.0);
@@ -463,16 +540,35 @@ mod tests {
 
     #[test]
     fn rasterizes_every_pose() {
-        let style = EyeStyle {
-            sclera: gpui::white(),
-            iris: gpui::green(),
-            pupil: gpui::black(),
-            line: gpui::white(),
-        };
         for open in [0.0, 0.3, 1.0] {
-            for frown in [0.0, 1.0] {
-                let pose = Pose { open, look: [1.0, -1.0], frown };
-                assert!(rasterize([96, 64], 1.0, pose, style).is_some());
+            for anger in [0.0, 0.4, 1.0] {
+                for time in [0.0, 0.7, 123.4] {
+                    let pose = Pose { open, look: [1.0, -1.0], anger, time };
+                    assert!(rasterize([72, 79], pose).is_some());
+                    assert!(rasterize([144, 158], pose).is_some());
+                }
+            }
+        }
+    }
+
+    /// Domates, tasarım alanının dışına taşmamalı: kenar piksel sütunları ve
+    /// satırları boş kalır.
+    #[test]
+    fn stays_inside_its_area() {
+        let [w, h] = VIEW.map(|v| (v * 2.0) as u32);
+        for (anger, time) in [(0.0, 0.0), (1.0, 0.3), (1.0, 0.9), (0.5, 2.2)] {
+            let pose = Pose { open: 1.0, look: [1.0, 1.0], anger, time };
+            let transform = Transform::from_row(2.0, 0.0, 0.0, 2.0, 80.0, -VIEW_TOP * 2.0);
+            let mut p = Painter { pixmap: Pixmap::new(w, h).unwrap(), transform };
+            draw(&mut p, pose);
+            let alpha = |x: u32, y: u32| p.pixmap.pixel(x, y).unwrap().alpha();
+            for x in 0..w {
+                assert_eq!(alpha(x, 0), 0, "üst kenar, {anger} {time}");
+                assert_eq!(alpha(x, h - 1), 0, "alt kenar");
+            }
+            for y in 0..h {
+                assert_eq!(alpha(0, y), 0, "sol kenar");
+                assert_eq!(alpha(w - 1, y), 0, "sağ kenar");
             }
         }
     }

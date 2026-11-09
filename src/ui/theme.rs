@@ -43,6 +43,21 @@ pub fn stage(stage: Stage) -> Hsla {
     }
 }
 
+/// Mola bekçisi domatesin renkleri.
+pub fn tomato() -> Hsla {
+    rgb(0xff6e6e).into()
+}
+/// Sinirlenmiş domates: daha koyu kırmızı.
+pub fn tomato_angry() -> Hsla {
+    rgb(0xd63c3c).into()
+}
+pub fn leaf() -> Hsla {
+    rgb(0x3fcf68).into()
+}
+pub fn blush() -> Hsla {
+    rgb(0xff79c6).into()
+}
+
 pub fn error() -> Hsla {
     rgb(0xff5555).into()
 }

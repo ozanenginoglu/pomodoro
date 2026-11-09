@@ -10,7 +10,7 @@ use gpui::{
 };
 
 use super::{
-    eye::{self, Eye, EyeStyle, Mood, Pose, SharedEyeCache},
+    eye::{self, Eye, Mood, Pose, PoseKey, SharedEyeCache},
     ring::{RingStyle, SharedRingCache, ring},
     settings::{self, SettingsPanel},
     theme,
@@ -72,9 +72,9 @@ const TOP_HEIGHT: f32 = 30.0;
 const INFO_HEIGHT: f32 = 18.0;
 /// Hover'da bilgi satırının yerine açılan kontrol satırı.
 const CONTROLS_HEIGHT: f32 = 40.0;
-/// Mola bekçisi gözün alanı ve altındaki küçük saat.
-const EYE_WIDTH: f32 = 96.0;
-const EYE_HEIGHT: f32 = 60.0;
+/// Mola bekçisi domatesin alanı ve altındaki küçük saat.
+const EYE_WIDTH: f32 = eye::VIEW[0] * 0.9;
+const EYE_HEIGHT: f32 = eye::VIEW[1] * 0.9;
 const EYE_CLOCK_SIZE: f32 = 24.0;
 /// Toplantı girişine yazılabilecek en uzun metin.
 const INPUT_MAX: usize = 14;
@@ -135,12 +135,12 @@ pub struct Widget {
     /// Kamera; yalnızca mola korunurken ve ayar açıkken açık.
     camera: Option<camera::Watch>,
     camera_started: Instant,
-    /// Kameranın son gördüğü yüzün merkezi; göz ona bakar.
+    /// Kameranın son gördüğü yüzün merkezi; domates ona bakar.
     face: Option<[f32; 2]>,
-    /// Mola bekçisi göz; yalnızca mola korunurken var.
+    /// Mola bekçisi domates; yalnızca mola korunurken var.
     eye: Option<Eye>,
-    /// En son çizilen göz pozu; değişmedikçe yeniden çizilmez.
-    drawn_eye: Option<[i32; 4]>,
+    /// En son çizilen domates pozu; değişmedikçe yeniden çizilmez.
+    drawn_eye: Option<PoseKey>,
     eye_image: SharedEyeCache,
     /// Uygulanmış görünüm ayarları (konum değişikliğini fark etmek için).
     appearance: AppearanceConfig,
@@ -674,8 +674,8 @@ impl Widget {
     /// X11'de pencere odakta değilken ve fare hareket etmezken animasyon
     /// kareleri gelmeyebiliyor. Bu yüzden `request_animation_frame` yerine
     /// geçiş bitene kadar kendi zamanlayıcımızla yeniden çizim istiyoruz.
-    /// Mola korunurken de döngü sürer: göz canlıdır ve kullanıcı yoklanır.
-    /// Göz kıpırdamıyorsa (bakışlar arası, imleç durgun) yeniden çizilmez.
+    /// Mola korunurken de döngü sürer: domates canlıdır ve kullanıcı yoklanır.
+    /// Domates hep hafifçe kıpırdadığı için göz kare hızında (~30 fps) yeniden çizilir.
     fn ensure_animation(&mut self, cx: &mut Context<Self>) {
         if self.animation.is_some() || !self.is_animating() {
             return;
@@ -782,9 +782,9 @@ impl Widget {
             .map(|p| {
                 let size = window.viewport_size();
                 let side = f32::from(size.width.min(size.height));
-                // Göz dairenin ortasının biraz üstünde.
+                // Domatesin gözleri dairenin ortasının biraz üstünde.
                 let dx = f32::from(p.x) - f32::from(size.width) / 2.0;
-                let dy = f32::from(p.y) - (f32::from(size.height) / 2.0 - side * 0.08);
+                let dy = f32::from(p.y) - (f32::from(size.height) / 2.0 - side * 0.04);
                 eye::cursor_direction(dx, dy, side)
             });
         let eye = self.eye.get_or_insert_with(|| Eye::new(now));
@@ -884,15 +884,9 @@ impl Widget {
             _ => theme::text(),
         };
         let main = match eye {
-            // Mola korunurken: göz ve altında küçük saat.
+            // Mola korunurken: domates ve altında küçük saat.
             Some(pose) => {
                 let shrink = 1.0 - 0.3 * reveal;
-                let style = EyeStyle {
-                    sclera: theme::text(),
-                    iris: color,
-                    pupil: theme::surface(),
-                    line: theme::text(),
-                };
                 div()
                     .flex()
                     .flex_col()
@@ -901,7 +895,7 @@ impl Widget {
                         div()
                             .w(px(EYE_WIDTH * k * shrink))
                             .h(px(EYE_HEIGHT * k * shrink))
-                            .child(eye::eye(self.eye_image.clone(), pose, style)),
+                            .child(eye::eye(self.eye_image.clone(), pose)),
                     )
                     .child(
                         div()
