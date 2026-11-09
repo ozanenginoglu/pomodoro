@@ -1,6 +1,6 @@
 //! Daire widget'ı: Pomodoro ve toplantı modları, halka, hover'da açılan kontroller.
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{
     App, Context, Div, Entity, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyBinding,
@@ -144,7 +144,11 @@ pub struct Widget {
     eye_image: SharedEyeCache,
     /// Uygulanmış görünüm ayarları (konum değişikliğini fark etmek için).
     appearance: AppearanceConfig,
-    /// Wayland'de konum ancak yeniden açılışta değişir; sayaçlar dururken yapılır.
+    /// Pencerenin açıldığı görünüm ayarları; Wayland'de konum ancak yeniden
+    /// açılışta değişir.
+    launched: AppearanceConfig,
+    /// Yeni konum için yeniden açılış bekliyor; ilerleme kaybolmasın diye
+    /// ancak hiçbir şey yarıda değilken yapılır (`is_idle`).
     pending_restart: bool,
     /// Kullanıcı widget'ı taşıyınca yeni konumu biraz bekleyip kaydeder.
     save_position: Option<Task<()>>,
@@ -222,6 +226,7 @@ impl Widget {
             drawn_eye: None,
             eye_image: SharedEyeCache::default(),
             appearance: c.appearance.clone(),
+            launched: c.appearance.clone(),
             pending_restart: false,
             save_position: None,
             input: String::new(),
@@ -258,14 +263,11 @@ impl Widget {
     /// Durum satırını günceller (xmobar `pomodoro status` ile okur).
     fn publish_status(&self) {
         let now = Instant::now();
-        let left = |r: Remaining| match r {
-            Remaining::Left(d) => format_clock(d),
-            Remaining::Over(d) => format!("+{}", format_clock(d)),
-        };
         let info = if let Some(meeting) = &self.meeting {
-            let stage = meeting.stage(now);
+            let wall = SystemTime::now();
+            let stage = meeting.stage(wall);
             StatusInfo::Meeting {
-                remaining: left(meeting.remaining(now)),
+                remaining: remaining_text(meeting.remaining(wall)),
                 ends_at: meeting.ends_at().format("%H:%M").to_string(),
                 color: theme::hex(theme::stage(stage)),
                 stage: match stage {
@@ -280,7 +282,7 @@ impl Widget {
             match timer.state() {
                 TimerState::Idle => StatusInfo::Idle,
                 state => StatusInfo::Pomodoro {
-                    remaining: left(timer.remaining(now)),
+                    remaining: remaining_text(timer.remaining(now)),
                     on_break: self.pomodoro.phase() != Phase::Work,
                     paused: state == TimerState::Paused && !self.pomodoro.is_held(),
                     color: theme::hex(theme::phase(self.pomodoro.phase())),
@@ -319,15 +321,14 @@ impl Widget {
             window.resize(size(px(side), px(side)));
         }
         let appearance = &config.appearance;
-        let moved = appearance.position != self.appearance.position
-            || appearance.margin != self.appearance.margin
-            || appearance.always_on_top != self.appearance.always_on_top;
+        let moved = !same_place(appearance, &self.appearance);
         // Boyut değişince köşedeki widget'ın kenar boşluğu korunsun diye yeniden konumlanır.
         if (moved || appearance.size != self.appearance.size)
             && platform::apply_appearance(window, cx, appearance) == Applied::NeedsRestart
             && moved
         {
-            self.pending_restart = true;
+            // Açılıştaki konuma geri dönüldüyse yeniden açılmaya gerek kalmaz.
+            self.pending_restart = !same_place(appearance, &self.launched);
         }
         self.appearance = appearance.clone();
         self.changed(cx);
@@ -365,9 +366,26 @@ impl Widget {
         }));
     }
 
-    /// Hiçbir sayaç çalışmıyor ve yarıda kalmış bir evre yok.
+    /// Yeniden açılışta kaybolacak bir şey yok: toplantı yok, yazılmış bir
+    /// giriş yok ve Pomodoro döngünün en başında (tamamlanmış tur yok).
+    /// Toplantı modundayken yeniden açılış Pomodoro moduna döndüreceği için
+    /// yalnızca Pomodoro modunda beklenir.
     fn is_idle(&self) -> bool {
-        self.meeting.is_none() && self.pomodoro.timer().state() == TimerState::Idle
+        self.mode == Mode::Pomodoro
+            && self.meeting.is_none()
+            && self.input.is_empty()
+            && self.pomodoro.is_fresh()
+    }
+
+    /// Bekleyen bir konum değişikliği varsa ve kaybolacak bir şey yoksa
+    /// widget'ı yeniden açar. Yeniden açıldıysa `true`.
+    fn restart_if_pending(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.pending_restart || !self.is_idle() {
+            return false;
+        }
+        log::info!("yeni konum için yeniden başlatılıyor");
+        cx.restart();
+        true
     }
 
     fn open_settings(&mut self, cx: &mut Context<Self>) {
@@ -409,7 +427,7 @@ impl Widget {
     fn start_meeting(&mut self, cx: &mut Context<Self>) {
         let wall_now = chrono::Local::now().naive_local();
         let result = meeting::parse(&self.input).and_then(|input| {
-            Meeting::start(input, wall_now, Instant::now(), self.meeting_settings.clone())
+            Meeting::start(input, wall_now, SystemTime::now(), self.meeting_settings.clone())
         });
         match result {
             Ok(meeting) => {
@@ -462,9 +480,7 @@ impl Widget {
     }
 
     fn changed(&mut self, cx: &mut Context<Self>) {
-        if self.pending_restart && self.is_idle() {
-            log::info!("yeni konum için yeniden başlatılıyor");
-            cx.restart();
+        if self.restart_if_pending(cx) {
             return;
         }
         cx.notify();
@@ -557,7 +573,8 @@ impl Widget {
             .timer()
             .is_running()
             .then(|| until_next_second(self.pomodoro.timer().remaining(now)));
-        let meeting = self.meeting.as_ref().map(|m| until_next_second(m.remaining(now)));
+        let meeting =
+            self.meeting.as_ref().map(|m| until_next_second(m.remaining(SystemTime::now())));
         pomodoro.into_iter().chain(meeting).min()
     }
 
@@ -585,8 +602,9 @@ impl Widget {
                             // Mola başladıysa göz belirsin.
                             this.ensure_animation(cx);
                         }
-                        if let Some(stage) = this.meeting.as_mut().and_then(|m| m.tick(now)) {
-                            let alert = this.meeting_alert(stage);
+                        let wall = SystemTime::now();
+                        if let Some(stage) = this.meeting.as_mut().and_then(|m| m.tick(wall)) {
+                            let alert = this.meeting_alert(stage, wall);
                             alert::fire(alert, &this.notifications);
                         }
                         cx.notify();
@@ -594,6 +612,8 @@ impl Widget {
                         let running = this.next_tick(now).is_some();
                         if !running {
                             this.ticker = None;
+                            // Sayaç kendiliğinden durduysa bekleyen konum değişikliği şimdi uygulanabilir.
+                            this.restart_if_pending(cx);
                         }
                         running
                     })
@@ -627,27 +647,28 @@ impl Widget {
         Alert { title: title.into(), body, chime: Chime::Phase, urgent: false }
     }
 
-    fn meeting_alert(&self, stage: Stage) -> Alert {
+    fn meeting_alert(&self, stage: Stage, now: SystemTime) -> Alert {
         let end = self
             .meeting
             .as_ref()
             .map(|m| m.ends_at().format("%H:%M").to_string())
             .unwrap_or_default();
-        let s = &self.meeting_settings;
-        let left = |d: Duration| i18n::meeting_minutes_left(d.as_secs() / 60, &end);
+        // Eşik değil gerçekten kalan süre: eşik toplantı sırasında değişmiş ya
+        // da uykudan sonra birkaç eşik birden geçilmiş olabilir. Saat gibi yukarı yuvarlanır.
+        let minutes = match self.meeting.as_ref().map(|m| m.remaining(now)) {
+            Some(Remaining::Left(d)) => {
+                (d.as_secs() + u64::from(d.subsec_nanos() > 0)).div_ceil(60)
+            }
+            _ => 0,
+        };
+        let left = i18n::meeting_minutes_left(minutes, &end);
         match stage {
-            Stage::Warning => Alert {
-                title: t().meeting.into(),
-                body: left(s.warning),
-                chime: Chime::Gentle,
-                urgent: false,
-            },
-            Stage::Critical => Alert {
-                title: t().meeting.into(),
-                body: left(s.critical),
-                chime: Chime::Phase,
-                urgent: false,
-            },
+            Stage::Warning => {
+                Alert { title: t().meeting.into(), body: left, chime: Chime::Gentle, urgent: false }
+            }
+            Stage::Critical => {
+                Alert { title: t().meeting.into(), body: left, chime: Chime::Phase, urgent: false }
+            }
             Stage::Overtime | Stage::Normal => Alert {
                 title: t().meeting_over.into(),
                 body: i18n::meeting_was_due(&end),
@@ -924,7 +945,7 @@ impl Widget {
     fn meeting_view(
         &self,
         meeting: &Meeting,
-        now: Instant,
+        now: SystemTime,
         reveal: f32,
         cx: &mut Context<Self>,
     ) -> Content {
@@ -957,7 +978,7 @@ impl Widget {
             // Süre aşılınca halka boşalmak yerine tamamen kırmızı olur.
             fraction: match stage {
                 Stage::Overtime => 1.0,
-                _ => 1.0 - meeting.timer().progress(now),
+                _ => 1.0 - meeting.progress(now),
             },
             main: main.into_any_element(),
             info: info.map(IntoElement::into_any_element),
@@ -1044,6 +1065,12 @@ fn clock(remaining: Remaining, reveal: f32, k: f32, color: Hsla) -> Div {
     big_text(remaining_text(remaining).into(), reveal, k, color)
 }
 
+/// İki görünüm ayarı widget'ı aynı yere koyar mı? (Boyut hariç: o pencereyi
+/// yeniden açmadan uygulanır.)
+fn same_place(a: &AppearanceConfig, b: &AppearanceConfig) -> bool {
+    a.position == b.position && a.margin == b.margin && a.always_on_top == b.always_on_top
+}
+
 /// Config'deki Pomodoro ayarları. Debug derlemesinde `POMODORO_DEMO=1` ile
 /// süreler dakika yerine saniye olur (test için).
 fn pomodoro_settings(config: &Config) -> PomodoroSettings {
@@ -1112,7 +1139,9 @@ impl Render for Widget {
 
         let content = match (self.mode, &self.meeting) {
             (Mode::Pomodoro, _) => self.pomodoro_view(now, reveal, eye, cx),
-            (Mode::Meeting, Some(meeting)) => self.meeting_view(meeting, now, reveal, cx),
+            (Mode::Meeting, Some(meeting)) => {
+                self.meeting_view(meeting, SystemTime::now(), reveal, cx)
+            }
             (Mode::Meeting, None) => self.meeting_input_view(window),
         };
 

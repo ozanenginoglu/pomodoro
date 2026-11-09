@@ -1,11 +1,11 @@
 //! Toplantı sayacı: süre ("45", "1h30") ya da bitiş saati ("14:30") ile
 //! başlar; son dakikalarda uyarır, bitince süre aşımını gösterir.
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime};
 
 use chrono::{NaiveDateTime, NaiveTime};
 
-use crate::timer::{Countdown, Remaining};
+use crate::timer::Remaining;
 
 /// Toplantı en fazla bu kadar sürebilir (yanlış girişlere karşı).
 const MAX_MEETING: Duration = Duration::from_secs(12 * 3600);
@@ -147,9 +147,13 @@ pub enum Stage {
     Overtime,
 }
 
+/// Toplantı duvar saatine göre işler (`SystemTime`): `Instant` bilgisayar
+/// uykudayken durur, toplantı ise durmaz. Uykudan uyanınca kalan süre ve
+/// aşamalar gösterilen bitiş saatiyle uyumlu kalır.
 #[derive(Clone, Debug)]
 pub struct Meeting {
-    timer: Countdown,
+    duration: Duration,
+    deadline: SystemTime,
     ends_at: NaiveDateTime,
     settings: MeetingSettings,
     /// Bildirimleri bir kez göndermek için en son bildirilen aşama.
@@ -157,17 +161,17 @@ pub struct Meeting {
 }
 
 impl Meeting {
-    /// Toplantıyı hemen başlatır.
+    /// Toplantıyı hemen başlatır. `wall_now` yerel saat (bitiş saatini
+    /// çözmek ve göstermek için), `now` aynı anın `SystemTime` karşılığı.
     pub fn start(
         input: MeetingInput,
         wall_now: NaiveDateTime,
-        now: Instant,
+        now: SystemTime,
         settings: MeetingSettings,
     ) -> Result<Self, ParseError> {
         let (duration, ends_at) = resolve(input, wall_now)?;
-        let mut timer = Countdown::new(duration);
-        timer.start(now);
-        let mut meeting = Self { timer, ends_at, settings, reported: Stage::Normal };
+        let deadline = now + duration;
+        let mut meeting = Self { duration, deadline, ends_at, settings, reported: Stage::Normal };
         // Zaten son 5 dakikadaysa, başlarken "uyarı" bildirimi gönderme.
         meeting.reported = meeting.stage(now);
         Ok(meeting)
@@ -177,21 +181,30 @@ impl Meeting {
         self.ends_at
     }
 
-    pub fn timer(&self) -> &Countdown {
-        &self.timer
-    }
-
     /// Eşikleri günceller. Daha önce bildirilmiş aşamalar tekrar bildirilmez.
     pub fn set_settings(&mut self, settings: MeetingSettings) {
         self.settings = settings;
     }
 
-    pub fn remaining(&self, now: Instant) -> Remaining {
-        self.timer.remaining(now)
+    pub fn remaining(&self, now: SystemTime) -> Remaining {
+        match self.deadline.duration_since(now) {
+            Ok(left) => Remaining::Left(left),
+            Err(e) => Remaining::Over(e.duration()),
+        }
     }
 
-    pub fn stage(&self, now: Instant) -> Stage {
-        match self.timer.remaining(now) {
+    /// Geçen sürenin toplam süreye oranı, 0.0..=1.0.
+    pub fn progress(&self, now: SystemTime) -> f32 {
+        match self.remaining(now) {
+            Remaining::Left(left) if !self.duration.is_zero() => {
+                (1.0 - left.as_secs_f32() / self.duration.as_secs_f32()).clamp(0.0, 1.0)
+            }
+            _ => 1.0,
+        }
+    }
+
+    pub fn stage(&self, now: SystemTime) -> Stage {
+        match self.remaining(now) {
             Remaining::Over(_) => Stage::Overtime,
             Remaining::Left(d) if d.is_zero() => Stage::Overtime,
             Remaining::Left(d) if d <= self.settings.critical => Stage::Critical,
@@ -202,7 +215,7 @@ impl Meeting {
 
     /// Periyodik olarak çağrılır; yeni bir aşamaya geçildiyse onu döndürür.
     /// Birden fazla eşik aynı anda geçildiyse yalnızca en sonuncusu bildirilir.
-    pub fn tick(&mut self, now: Instant) -> Option<Stage> {
+    pub fn tick(&mut self, now: SystemTime) -> Option<Stage> {
         let stage = self.stage(now);
         (stage > self.reported).then(|| {
             self.reported = stage;
@@ -295,7 +308,7 @@ mod tests {
 
     #[test]
     fn stages_follow_thresholds() {
-        let t0 = Instant::now();
+        let t0 = SystemTime::now();
         let m = Meeting::start(dur(30), at(14, 0, 0), t0, MeetingSettings::default()).unwrap();
         assert_eq!(m.stage(t0), Stage::Normal);
         assert_eq!(m.stage(t0 + 25 * MIN), Stage::Warning);
@@ -303,11 +316,14 @@ mod tests {
         assert_eq!(m.stage(t0 + 30 * MIN), Stage::Overtime);
         assert_eq!(m.remaining(t0 + 33 * MIN), Remaining::Over(3 * MIN));
         assert_eq!(m.ends_at(), at(14, 30, 0));
+        assert_eq!(m.progress(t0), 0.0);
+        assert_eq!(m.progress(t0 + 15 * MIN), 0.5);
+        assert_eq!(m.progress(t0 + 40 * MIN), 1.0);
     }
 
     #[test]
     fn tick_reports_each_stage_once() {
-        let t0 = Instant::now();
+        let t0 = SystemTime::now();
         let mut m = Meeting::start(dur(30), at(14, 0, 0), t0, MeetingSettings::default()).unwrap();
         assert_eq!(m.tick(t0 + 10 * MIN), None);
         assert_eq!(m.tick(t0 + 25 * MIN), Some(Stage::Warning));
@@ -319,14 +335,14 @@ mod tests {
 
     #[test]
     fn skipped_thresholds_report_only_latest() {
-        let t0 = Instant::now();
+        let t0 = SystemTime::now();
         let mut m = Meeting::start(dur(30), at(14, 0, 0), t0, MeetingSettings::default()).unwrap();
         assert_eq!(m.tick(t0 + 35 * MIN), Some(Stage::Overtime));
     }
 
     #[test]
     fn short_meeting_does_not_warn_immediately() {
-        let t0 = Instant::now();
+        let t0 = SystemTime::now();
         let mut m = Meeting::start(dur(3), at(14, 0, 0), t0, MeetingSettings::default()).unwrap();
         assert_eq!(m.stage(t0), Stage::Warning);
         assert_eq!(m.tick(t0), None, "başlarken uyarı bildirimi gelmemeli");

@@ -169,7 +169,7 @@ The window class is `pomodoro` (the settings panel is `pomodoro-settings`). To s
 
 ### Linux (Wayland)
 
-On compositors with the layer-shell protocol (Hyprland, Sway, niri, KDE Plasma, …) the widget is a real desktop widget: it stays at the chosen corner, has no taskbar entry, and stays above windows (or below them, with *always on top* turned off). The settings panel opens in the middle of the screen. Wayland doesn't let a window place itself, so a new position takes effect after a quick restart, which happens as soon as no timer is running.
+On compositors with the layer-shell protocol (Hyprland, Sway, niri, KDE Plasma, …) the widget is a real desktop widget: it stays at the chosen corner, has no taskbar entry, and stays above windows (or below them, with *always on top* turned off). The settings panel opens in the middle of the screen. Wayland doesn't let a window place itself, so a new position takes effect after a quick restart. To keep your progress, the restart waits until nothing would be lost: no meeting, and the Pomodoro cycle back at the start of its first round (press `R` while stopped to reset it). Switching back to the original position cancels the restart.
 
 On GNOME (no layer-shell) the widget opens as a normal window and the compositor decides where it goes.
 

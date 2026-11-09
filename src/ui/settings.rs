@@ -54,8 +54,9 @@ pub fn open(
 
 pub struct SettingsPanel {
     config: Entity<Config>,
-    /// Panel açılırken bulunan kameralar.
-    cameras: Vec<camera::Device>,
+    /// Panel açılırken bulunan kameralar. Aygıtları yoklamak zaman alabildiği
+    /// için arka planda bulunur; o sırada `None`.
+    cameras: Option<Vec<camera::Device>>,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -73,7 +74,18 @@ impl SettingsPanel {
                 }
             }),
         ];
-        Self { config, cameras: camera::devices(), focus, _subscriptions: subscriptions }
+        // Her /dev/video* düğümü açılıp sorgulanır (uykudaki bir USB kamera
+        // yüzlerce ms sürebilir); arayüz bu sırada donmasın.
+        let devices = cx.background_executor().spawn(async { camera::devices() });
+        cx.spawn(async move |this, cx| {
+            let devices = devices.await;
+            let _ = this.update(cx, |this, cx| {
+                this.cameras = Some(devices);
+                cx.notify();
+            });
+        })
+        .detach();
+        Self { config, cameras: None, focus, _subscriptions: subscriptions }
     }
 
     /// Ayarı değiştirir, sınırlara kırpar, kaydeder ve widget'a haber verir.
@@ -119,13 +131,16 @@ impl SettingsPanel {
         };
         // Uzun süreler için büyük adım: 60 dakikanın üstünde 5'er dakika
         // (tur sayısı en fazla 12 olduğu için yalnızca süreleri etkiler).
-        let step = if value >= 60 { 5 } else { 1 };
+        // Adım gidilecek yöne göre seçilir ki "+" ile "−" birbirini geri alsın:
+        // 60'tan aşağı 59'a, yukarı 65'e.
+        let up = if value >= 60 { 5 } else { 1 };
+        let down = if value > 60 { 5 } else { 1 };
         row(label).child(
             div()
                 .flex()
                 .items_center()
                 .gap(px(2.0))
-                .child(button(0, "−", value > min, -step))
+                .child(button(0, "−", value > min, -down))
                 .child(
                     div()
                         .w(px(64.0))
@@ -134,7 +149,7 @@ impl SettingsPanel {
                         .text_color(theme::text())
                         .child(SharedString::from(format!("{value} {unit}"))),
                 )
-                .child(button(1, "+", value < max, step)),
+                .child(button(1, "+", value < max, up)),
         )
     }
 
@@ -157,29 +172,29 @@ impl SettingsPanel {
     /// Kamera seçici: "‹  Kamera adı  ›". Oklar kameralar ve en sondaki
     /// "Yok" (kamera kullanma, yalnızca klavye/fare) arasında döner.
     fn camera_row(&self, selected: Option<&str>, cx: &mut Context<Self>) -> Div {
-        let ids: Vec<String> = self
-            .cameras
-            .iter()
-            .map(|d| d.id.clone())
-            .chain([config::NO_CAMERA.to_string()])
-            .collect();
+        // Kameralar henüz aranıyorsa seçici kısa bir an "…" gösterir.
+        let loading = self.cameras.is_none();
+        let cameras = self.cameras.as_deref().unwrap_or_default();
+        let ids: Vec<String> =
+            cameras.iter().map(|d| d.id.clone()).chain([config::NO_CAMERA.to_string()]).collect();
         let count = ids.len();
         // Seçim yoksa ilk kamera; takılı olmayan bir kamera seçiliyse `None`.
         let index = match selected {
             Some(id) => ids.iter().position(|i| i == id),
-            None => (!self.cameras.is_empty()).then_some(0),
+            None => (!cameras.is_empty()).then_some(0),
         };
         let name: SharedString = match index {
-            Some(i) => match self.cameras.get(i) {
+            _ if loading => "…".into(),
+            Some(i) => match cameras.get(i) {
                 Some(device) => device.name.clone().into(),
                 None => t().camera_none.into(),
             },
             // Seçili kamera şu an takılı değilse kimliğini göster.
             None => selected.map_or(t().no_camera.into(), |id| id.to_string().into()),
         };
-        let found = index.is_some();
+        let found = index.is_some() && !loading;
         let arrow = |id: usize, path: &'static str, step: usize| {
-            let enabled = count > 1 || !found;
+            let enabled = !loading && (count > 1 || index.is_none());
             let ids = ids.clone();
             div()
                 .id(ElementId::from(("camera", id)))

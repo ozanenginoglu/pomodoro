@@ -18,7 +18,7 @@ use windows as backend;
 
 use std::{
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -60,6 +60,11 @@ enum State {
     Running(Sighting),
     Failed,
 }
+
+/// Kamerayı tutan iş parçacığı. `Watch` bırakılınca iş parçacığı ancak o
+/// sıradaki kare gelince (en fazla kare zaman aşımı kadar sonra) aygıtı bırakır;
+/// hemen ardından açılan yeni `Watch` aygıtı meşgul bulmasın diye önce bunu bekler.
+static DEVICE: Mutex<()> = Mutex::new(());
 
 /// Çalışan kamera. Bırakılınca (drop) kamera kapanır.
 pub struct Watch {
@@ -114,9 +119,15 @@ fn set(state: &Mutex<State>, value: State) {
 }
 
 fn run(device: Option<&str>, stop: &AtomicBool, state: &Mutex<State>) -> anyhow::Result<()> {
-    let detector = Detector::new()?;
+    // Bekçi en son bırakılır: önce `capture` kapanır.
+    let _device = DEVICE.lock().unwrap_or_else(PoisonError::into_inner);
+    if stop.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    // Kamera açılamıyorsa model hiç hazırlanmasın.
     let mut capture = backend::Capture::open(device)?;
     log::info!("kamera açıldı: {}", capture.describe());
+    let detector = Detector::new()?;
     let mut filter = PresenceFilter::default();
     let mut next = Instant::now();
     while !stop.load(Ordering::Relaxed) {

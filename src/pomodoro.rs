@@ -126,6 +126,14 @@ impl Pomodoro {
         (filled, total)
     }
 
+    /// Döngünün en başı: ilk çalışma turu, başlatılmamış, tamamlanmış tur yok.
+    pub fn is_fresh(&self) -> bool {
+        self.phase == Phase::Work
+            && self.completed == 0
+            && !self.held
+            && self.timer.state() == crate::timer::TimerState::Idle
+    }
+
     /// Mola, kullanıcı bilgisayar başında olduğu için mi duruyor?
     pub fn is_held(&self) -> bool {
         self.held
@@ -499,5 +507,25 @@ mod tests {
         p.reset_all();
         assert_eq!(p.phase(), Phase::Work);
         assert_eq!(p.rounds(), (0, 3));
+    }
+
+    #[test]
+    fn is_fresh_only_at_the_very_start_of_a_cycle() {
+        let mut now = Instant::now();
+        let mut p = Pomodoro::new(settings());
+        assert!(p.is_fresh());
+        p.toggle(now);
+        assert!(!p.is_fresh(), "çalışıyor");
+        p.reset();
+        assert!(p.is_fresh());
+        // Bir tur tamamlandı, mola beklerken bile ilerleme var.
+        finish(&mut p, &mut now);
+        p.reset();
+        assert!(!p.is_fresh());
+        p.skip(now);
+        assert_eq!((p.phase(), p.timer().state()), (Phase::Work, TimerState::Idle));
+        assert!(!p.is_fresh(), "tamamlanan tur kaybolmamalı");
+        p.reset_all();
+        assert!(p.is_fresh());
     }
 }

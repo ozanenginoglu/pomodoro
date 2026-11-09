@@ -12,17 +12,13 @@
 
 use std::{cell::RefCell, f32::consts::PI, rc::Rc, sync::Arc, time::Duration, time::Instant};
 
-use gpui::{
-    Bounds, Corners, Hsla, IntoElement, RenderImage, Styled, Window, canvas, size,
-    swap_rgba_pa_to_bgra,
-};
-use image::{Frame, RgbaImage};
-use smallvec::smallvec;
-use tiny_skia::{
-    FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, Rect, Stroke, Transform,
-};
+use gpui::{Bounds, Corners, Hsla, IntoElement, RenderImage, Styled, canvas, size};
+use tiny_skia::{FillRule, LineCap, LineJoin, Path, PathBuilder, Pixmap, Rect, Stroke, Transform};
 
-use super::theme;
+use super::{
+    raster::{ImageCache, paint, to_image},
+    theme,
+};
 
 /// Domatesin ruh hali.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,11 +183,9 @@ pub fn cursor_direction(dx: f32, dy: f32, reach: f32) -> [f32; 2] {
 
 // ---- Çizim -------------------------------------------------------------
 
+/// Bir önceki domatesi saklar; poz değişmedikçe yeniden çizmez.
 #[derive(Default)]
-pub struct EyeCache {
-    key: Option<Key>,
-    image: Option<Arc<RenderImage>>,
-}
+pub struct EyeCache(ImageCache<Key>);
 
 pub type SharedEyeCache = Rc<RefCell<EyeCache>>;
 
@@ -214,7 +208,8 @@ pub fn eye(cache: SharedEyeCache, pose: Pose) -> impl IntoElement {
             if pixels.contains(&0) {
                 return;
             }
-            let image = cache.borrow_mut().get(window, pixels, pose);
+            let key = Key { pixels, pose: pose.quantized() };
+            let image = cache.borrow_mut().0.get(window, key, || rasterize(pixels, pose));
             if let Some(image) = image {
                 let bounds =
                     Bounds::new(bounds.origin, size(bounds.size.width, bounds.size.height));
@@ -225,25 +220,6 @@ pub fn eye(cache: SharedEyeCache, pose: Pose) -> impl IntoElement {
     .size_full()
 }
 
-impl EyeCache {
-    fn get(
-        &mut self,
-        window: &mut Window,
-        pixels: [u32; 2],
-        pose: Pose,
-    ) -> Option<Arc<RenderImage>> {
-        let key = Key { pixels, pose: pose.quantized() };
-        if self.key != Some(key) {
-            let image = rasterize(pixels, pose)?;
-            if let Some(old) = self.image.replace(image) {
-                let _ = window.drop_image(old);
-            }
-            self.key = Some(key);
-        }
-        self.image.clone()
-    }
-}
-
 /// Çizim, bu boyutta bir tasarım alanında yapılır; ölçek alana sığacak
 /// biçimde seçilir. Domatesin gövdesi alanın yatay ortasında, `y = 12`'de.
 pub const VIEW: [f32; 2] = [80.0, 92.0];
@@ -251,19 +227,6 @@ pub const VIEW: [f32; 2] = [80.0, 92.0];
 const VIEW_TOP: f32 = -40.0;
 /// Gövdenin dikey yarıçapı; yatayda biraz daha geniştir.
 const BODY: f32 = 34.0;
-
-fn paint(color: Hsla, alpha: f32) -> Paint<'static> {
-    let c = color.to_rgb();
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(
-        (c.r * 255.0).round() as u8,
-        (c.g * 255.0).round() as u8,
-        (c.b * 255.0).round() as u8,
-        (c.a * alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
-    );
-    paint.anti_alias = true;
-    paint
-}
 
 fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
     let (a, b) = (a.to_rgb(), b.to_rgb());
@@ -334,13 +297,7 @@ fn rasterize(pixels: [u32; 2], pose: Pose) -> Option<Arc<RenderImage>> {
     );
     let mut p = Painter { pixmap: Pixmap::new(w, h)?, transform };
     draw(&mut p, pose);
-
-    let mut data = p.pixmap.take();
-    for pixel in data.as_chunks_mut::<4>().0 {
-        swap_rgba_pa_to_bgra(pixel);
-    }
-    let buffer = RgbaImage::from_raw(w, h, data)?;
-    Some(Arc::new(RenderImage::new(smallvec![Frame::new(buffer)])))
+    to_image(p.pixmap)
 }
 
 fn draw(p: &mut Painter, pose: Pose) {

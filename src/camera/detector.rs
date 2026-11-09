@@ -4,7 +4,7 @@
 //! söyler. Prototipte gerçek bir yüzde skor 1.00, boş sahnede en fazla ~0.27
 //! çıktı; eşik bu yüzden 0.5. Yandan bakan yüz de bulunuyor.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::Context;
 use tract_onnx::prelude::*;
@@ -12,6 +12,9 @@ use tract_onnx::prelude::*;
 use super::frame::{INPUT_HEIGHT, INPUT_WIDTH};
 
 static MODEL: &[u8] = include_bytes!("../../assets/models/ultraface-rfb-320.onnx");
+/// Hazırlanmış model; ayrıştırma ve iyileştirme pahalı olduğu için süreç
+/// boyunca bir kez yapılır. Model gömülü olduğundan hata da kalıcıdır.
+static RUNNABLE: OnceLock<Result<Arc<TypedRunnableModel>, String>> = OnceLock::new();
 const THRESHOLD: f32 = 0.5;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,11 +30,8 @@ pub struct Detector {
 
 impl Detector {
     pub fn new() -> anyhow::Result<Self> {
-        let model = tract_onnx::onnx()
-            .model_for_read(&mut std::io::Cursor::new(MODEL))?
-            .with_input_fact(0, f32::fact([1, 3, INPUT_HEIGHT, INPUT_WIDTH]).into())?
-            .into_optimized()?
-            .into_runnable()?;
+        let model = RUNNABLE.get_or_init(|| load().map_err(|e| format!("{e:#}")));
+        let model = model.clone().map_err(|e| anyhow::anyhow!("yüz algılama modeli: {e}"))?;
         Ok(Self { model })
     }
 
@@ -59,6 +59,14 @@ impl Detector {
         log::trace!("kamera: en yüksek skor {top:.2}");
         Ok(best)
     }
+}
+
+fn load() -> anyhow::Result<Arc<TypedRunnableModel>> {
+    tract_onnx::onnx()
+        .model_for_read(&mut std::io::Cursor::new(MODEL))?
+        .with_input_fact(0, f32::fact([1, 3, INPUT_HEIGHT, INPUT_WIDTH]).into())?
+        .into_optimized()?
+        .into_runnable()
 }
 
 #[cfg(test)]

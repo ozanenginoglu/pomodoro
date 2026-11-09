@@ -259,6 +259,15 @@ impl Config {
         }
     }
 
+    /// Yalnızca arayüz dilini okur; komut satırı (`pomodoro status` vb.) için.
+    /// `load`'ın aksine bozuk dosyayı kenara almaz: xmobar her saniye
+    /// çağırırken yarım kalmış bir düzenleme yüzünden ayar dosyası taşınmasın.
+    pub fn language() -> Language {
+        Self::path()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .map_or_else(Language::default, |text| language_of(&text))
+    }
+
     pub fn save(&self) {
         let Some(path) = Self::path() else {
             return;
@@ -277,6 +286,24 @@ impl Config {
             log::warn!("{} yazılamadı: {e}", path.display());
         }
     }
+}
+
+/// Metindeki `language` değeri. Dosyanın geri kalanı bozuk olsa da okunur;
+/// okunamazsa varsayılan dil.
+fn language_of(text: &str) -> Language {
+    #[derive(Deserialize)]
+    struct OnlyLanguage {
+        #[serde(default)]
+        language: Language,
+    }
+    if let Ok(only) = toml::from_str::<OnlyLanguage>(text) {
+        return only.language;
+    }
+    // Dosya bozuksa, tablolardan önceki satırlarda dil yine de bulunabilir.
+    text.lines()
+        .take_while(|line| !line.trim_start().starts_with('['))
+        .find_map(|line| toml::from_str::<OnlyLanguage>(line).ok())
+        .map_or_else(Language::default, |only| only.language)
 }
 
 #[cfg(test)]
@@ -341,5 +368,19 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.pomodoro_settings(), PomodoroSettings::default());
         assert_eq!(config.meeting_settings(), MeetingSettings::default());
+    }
+
+    #[test]
+    fn language_is_read_even_from_a_broken_file() {
+        assert_eq!(
+            language_of("language = \"tr\"\n[pomodoro]\nwork_minutes = 50\n"),
+            Language::Turkish
+        );
+        assert_eq!(
+            language_of("language = \"tr\"\n[pomodoro]\nwork_minutes = \n"),
+            Language::Turkish
+        );
+        assert_eq!(language_of("[pomodoro\n"), Language::default());
+        assert_eq!(language_of(""), Language::default());
     }
 }

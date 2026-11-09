@@ -8,13 +8,10 @@
 
 use std::{cell::RefCell, f32::consts::TAU, rc::Rc, sync::Arc};
 
-use gpui::{
-    Bounds, Corners, Hsla, IntoElement, RenderImage, Styled, Window, canvas, size,
-    swap_rgba_pa_to_bgra,
-};
-use image::{Frame, RgbaImage};
-use smallvec::smallvec;
-use tiny_skia::{FillRule, LineCap, Paint, PathBuilder, Pixmap, Stroke, Transform};
+use gpui::{Bounds, Corners, Hsla, IntoElement, RenderImage, Styled, canvas, size};
+use tiny_skia::{FillRule, LineCap, PathBuilder, Pixmap, Stroke, Transform};
+
+use super::raster::{ImageCache, paint, to_image};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RingStyle {
@@ -25,12 +22,9 @@ pub struct RingStyle {
     pub color: Hsla,
 }
 
-/// Bir önceki görüntüyü saklar; anahtar değişmedikçe yeniden çizmez.
+/// Bir önceki halkayı saklar; anahtar değişmedikçe yeniden çizmez.
 #[derive(Default)]
-pub struct RingCache {
-    key: Option<Key>,
-    image: Option<Arc<RenderImage>>,
-}
+pub struct RingCache(ImageCache<Key>);
 
 #[derive(Clone, Copy, PartialEq)]
 struct Key {
@@ -57,7 +51,14 @@ pub fn ring(cache: SharedRingCache, fraction: f32, style: RingStyle) -> impl Int
             if pixels == 0 {
                 return;
             }
-            let image = cache.borrow_mut().get(window, pixels, scale, fraction, style);
+            let fraction = fraction.clamp(0.0, 1.0);
+            let key = Key {
+                pixels,
+                fraction: (fraction * 4096.0).round() as u32,
+                style: style_key(style),
+            };
+            let image =
+                cache.borrow_mut().0.get(window, key, || rasterize(pixels, scale, fraction, style));
             if let Some(image) = image {
                 let _ = window.paint_image(bounds, bounds, Corners::default(), image, 0, false);
             }
@@ -66,50 +67,12 @@ pub fn ring(cache: SharedRingCache, fraction: f32, style: RingStyle) -> impl Int
     .size_full()
 }
 
-impl RingCache {
-    fn get(
-        &mut self,
-        window: &mut Window,
-        pixels: u32,
-        scale: f32,
-        fraction: f32,
-        style: RingStyle,
-    ) -> Option<Arc<RenderImage>> {
-        let fraction = fraction.clamp(0.0, 1.0);
-        let key =
-            Key { pixels, fraction: (fraction * 4096.0).round() as u32, style: style_key(style) };
-
-        if self.key != Some(key) {
-            let image = rasterize(pixels, scale, fraction, style)?;
-            // Eski görüntüyü GPU atlasından çıkar, yoksa her saniye birikir.
-            if let Some(old) = self.image.replace(image) {
-                let _ = window.drop_image(old);
-            }
-            self.key = Some(key);
-        }
-        self.image.clone()
-    }
-}
-
 fn style_key(style: RingStyle) -> [u32; 4] {
     let pack = |c: Hsla| {
         let c = c.to_rgb();
         u32::from_be_bytes([c.r, c.g, c.b, c.a].map(|v| (v * 255.0).round() as u8))
     };
     [style.width.to_bits(), pack(style.surface), pack(style.track), pack(style.color)]
-}
-
-fn paint(color: Hsla) -> Paint<'static> {
-    let c = color.to_rgb();
-    let mut paint = Paint::default();
-    paint.set_color_rgba8(
-        (c.r * 255.0).round() as u8,
-        (c.g * 255.0).round() as u8,
-        (c.b * 255.0).round() as u8,
-        (c.a * 255.0).round() as u8,
-    );
-    paint.anti_alias = true;
-    paint
 }
 
 fn rasterize(pixels: u32, scale: f32, fraction: f32, style: RingStyle) -> Option<Arc<RenderImage>> {
@@ -123,11 +86,11 @@ fn rasterize(pixels: u32, scale: f32, fraction: f32, style: RingStyle) -> Option
     let identity = Transform::identity();
 
     let disc = PathBuilder::from_circle(center, center, outer)?;
-    pixmap.fill_path(&disc, &paint(style.surface), FillRule::Winding, identity, None);
+    pixmap.fill_path(&disc, &paint(style.surface, 1.0), FillRule::Winding, identity, None);
 
     let track = PathBuilder::from_circle(center, center, ring_radius)?;
     let stroke = Stroke { width, ..Stroke::default() };
-    pixmap.stroke_path(&track, &paint(style.track), &stroke, identity, None);
+    pixmap.stroke_path(&track, &paint(style.track, 1.0), &stroke, identity, None);
 
     if fraction > 0.0 {
         let full = fraction >= 0.9995;
@@ -138,17 +101,11 @@ fn rasterize(pixels: u32, scale: f32, fraction: f32, style: RingStyle) -> Option
         };
         let arc = if full { Some(track) } else { arc_path(center, center, ring_radius, fraction) };
         if let Some(arc) = arc {
-            pixmap.stroke_path(&arc, &paint(style.color), &stroke, identity, None);
+            pixmap.stroke_path(&arc, &paint(style.color, 1.0), &stroke, identity, None);
         }
     }
 
-    // tiny-skia: önçarpımlı RGBA → GPUI: düz alfa BGRA.
-    let mut data = pixmap.take();
-    for pixel in data.as_chunks_mut::<4>().0 {
-        swap_rgba_pa_to_bgra(pixel);
-    }
-    let buffer = RgbaImage::from_raw(pixels, pixels, data)?;
-    Some(Arc::new(RenderImage::new(smallvec![Frame::new(buffer)])))
+    to_image(pixmap)
 }
 
 /// Saat 12'den saat yönünde `fraction` turluk yay; ≤90°'lik kübik Bézier

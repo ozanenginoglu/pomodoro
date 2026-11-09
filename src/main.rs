@@ -22,13 +22,14 @@ use gpui_platform::application;
 
 fn main() -> ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
-    // Komut satırı mesajları da ayarlardaki dilde olsun.
-    let config = config::Config::load();
-    i18n::set(config.language);
-
+    // Komut satırı mesajları da ayarlardaki dilde olsun. İstemci yalnızca dili
+    // okur: ayar dosyasını yüklemek (bozuksa kenara almak) widget'ın işi.
     if let Some(arg) = std::env::args().nth(1) {
+        i18n::set(config::Config::language());
         return run_command(&arg);
     }
+    let config = config::Config::load();
+    i18n::set(config.language);
 
     let (commands, status) = match ipc::listen() {
         Ok(ipc::Bind::Listening(commands, status)) => (commands, status),
