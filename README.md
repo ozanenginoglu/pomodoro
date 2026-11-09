@@ -13,6 +13,7 @@ Runs on **Linux (X11 and Wayland)** and **Windows**. It's written in Rust with [
 | **Meeting** | Type a length (`45`, `1h30`) or an end time (`14:30`) and it counts down. The ring turns yellow, then orange as the end gets close, and red when the meeting runs over. |
 | **Alerts** | A desktop notification and a short bell chime at the end of each round and at each meeting stage. |
 | **Status bar** | `pomodoro status` prints the current state for xmobar, waybar or plain text. |
+| **Hooks** | Run your own commands when a round starts or ends or a meeting changes stage: silence notifications while you work, send the "break's over" alert to your phone, color your keyboard. |
 
 ![The settings panel: work, short break and long break lengths, rounds before a long break, auto-start switches, the break guard switch and camera picker, meeting display and warning times, notification and sound switches, and the widget's size, position, always-on-top setting and language](docs/settings.png)
 
@@ -148,6 +149,45 @@ template = "... %pomo% ..."
 
 The CSS class is one of `idle`, `work`, `break`, `paused`, `meeting`, `warning`, `critical`, `overtime` (and `closed` when the widget isn't running, with empty text so waybar hides the module).
 
+### Hooks
+
+Hooks run a shell command of your choice when something happens: `sh -c` on Linux, `cmd /C` on Windows. Add them to the `[hooks]` table in the [config file](#configuration). There's no setting for them in the panel. The widget reads the file when it starts, so quit it before you edit the file and start it again afterwards; otherwise the settings panel may overwrite your changes.
+
+```toml
+[hooks]
+# Pause desktop notifications (dunst) while you work, show them again when you stop.
+work_start = "dunstctl set-paused true"
+work_stop  = "dunstctl set-paused false"
+
+# The break guard makes you leave the desk, so send "break's over" to your phone (ntfy.sh).
+break_done = 'curl -s -d "$POMODORO_TITLE: $POMODORO_MESSAGE" ntfy.sh/my-pomodoro-topic'
+# ...or through KDE Connect:
+# break_done = 'kdeconnect-cli -n "My phone" --ping-msg "$POMODORO_MESSAGE"'
+```
+
+| Hook | Runs when |
+|---|---|
+| `work_start`, `break_start` | A work round or break starts counting: you started or resumed it, or it started on its own after the previous round. A break the break guard is holding still counts as started. |
+| `work_stop`, `break_stop` | It stops counting: it finished, you paused, reset or skipped it, or you quit the widget. |
+| `work_done`, `break_done` | It ran its full length. This is when the desktop notification appears. |
+| `meeting_start` | You start a meeting. |
+| `meeting_warning`, `meeting_critical`, `meeting_overtime` | The meeting reaches that stage (the same moments as the notifications). |
+| `meeting_end` | You end the meeting, or you quit the widget during one. |
+
+The command gets these environment variables (`%NAME%` in `cmd` on Windows):
+
+| Variable | Value |
+|---|---|
+| `POMODORO_EVENT` | The hook's name, e.g. `work_start`. |
+| `POMODORO_PHASE` | `work`, `short_break` or `long_break`. For `*_done`, the round that finished. |
+| `POMODORO_NEXT` | `*_done` only: the round that comes next. |
+| `POMODORO_REASON` | Start: `started`, `resumed` or `auto`. Stop: `finished`, `paused`, `reset`, `skipped` or `quit`. `meeting_end`: `ended` or `quit`. |
+| `POMODORO_MINUTES` | Start and `meeting_start`: minutes left. |
+| `POMODORO_TITLE`, `POMODORO_MESSAGE` | `*_done` and the meeting stages: the notification's text, in the language set in the settings. |
+| `POMODORO_MEETING_END` | Meeting hooks: the end time, e.g. `14:30`. |
+
+Hooks run one at a time, in the order of the events, so a `work_stop` never overtakes the `work_start` before it. A hook that runs longer than 30 seconds is stopped; end a long-running command with `&` to keep it going in the background. When you quit the widget, it waits up to 2 seconds for pending hooks. A hook that fails is only logged (`RUST_LOG=pomodoro=info pomodoro` shows each hook as it runs).
+
 ## Platform notes
 
 ### Linux (X11)
@@ -216,6 +256,9 @@ position = "center"             # "center", "top_left", "top_right", "bottom_lef
 margin = 24                     # distance from the screen edge, 0–400
 always_on_top = true
 # custom = [x, y]               # set when you drag the widget
+
+[hooks]                         # shell commands, none by default; see "Hooks" above
+# work_start = "dunstctl set-paused true"
 ```
 
 Values outside the allowed range are clamped. If the file can't be read, it's renamed to `config.toml.broken` and the defaults are used.

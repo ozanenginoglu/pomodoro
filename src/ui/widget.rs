@@ -20,6 +20,7 @@ use crate::{
     assets::icon,
     camera,
     config::{AppearanceConfig, CameraConfig, Config, NotificationConfig, Position},
+    hooks::{self, Event, HooksConfig, phase_key},
     i18n::{self, t},
     ipc::{self, Command},
     meeting::{self, Meeting, MeetingDisplay, MeetingSettings, Stage},
@@ -79,6 +80,20 @@ const EYE_CLOCK_SIZE: f32 = 24.0;
 /// Toplantı girişine yazılabilecek en uzun metin.
 const INPUT_MAX: usize = 14;
 
+/// Pomodoro'nun işleyen evresi neden değişti? Olay komutlarına
+/// `POMODORO_REASON` olarak geçer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cause {
+    /// Başlat/duraklat. `fresh`: evre daha hiç işlememişti (başlatma, sürdürme değil).
+    Toggle {
+        fresh: bool,
+    },
+    Reset,
+    Skip,
+    /// Süre doldu (sonraki evre kendiliğinden başlamış olabilir).
+    Finished,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
     Pomodoro,
@@ -127,6 +142,9 @@ pub struct Widget {
     meeting: Option<Meeting>,
     meeting_settings: MeetingSettings,
     notifications: NotificationConfig,
+    hooks: HooksConfig,
+    /// Olay komutları için en son işleyen Pomodoro evresi.
+    running: hooks::Activity,
     /// Kullanıcı bilgisayar başında mı? Mola korunurken yoklanır; ne kamera
     /// ne de platform bilemiyorsa `None` (göz görünmez, mola her zamanki gibi işler).
     activity: Option<bool>,
@@ -168,8 +186,29 @@ pub struct Widget {
     ring: SharedRingCache,
     /// `pomodoro status` için paylaşılan durum satırı.
     status: ipc::Status,
-    _subscriptions: [Subscription; 2],
+    _subscriptions: [Subscription; 3],
     _commands: Task<()>,
+}
+
+/// Kalan tam dakika (yukarı yuvarlanır); süre geçtiyse 0.
+fn whole_minutes(remaining: Remaining) -> u64 {
+    match remaining {
+        Remaining::Left(d) => d.as_secs().div_ceil(60),
+        Remaining::Over(_) => 0,
+    }
+}
+
+fn phase_env(phase: Phase, reason: &str) -> hooks::Env {
+    vec![("POMODORO_PHASE", phase_key(phase).into()), ("POMODORO_REASON", reason.into())]
+}
+
+/// Bildirimi olan olaylarda komut aynı metni alır (ör. telefona iletmek için).
+fn alert_env(alert: &Alert) -> hooks::Env {
+    vec![("POMODORO_TITLE", alert.title.clone()), ("POMODORO_MESSAGE", alert.body.clone())]
+}
+
+fn meeting_env(meeting: &Meeting) -> hooks::Env {
+    vec![("POMODORO_MEETING_END", meeting.ends_at().format("%H:%M").to_string())]
 }
 
 /// Nokta, pencereye çizilen dairenin içinde mi?
@@ -199,6 +238,12 @@ impl Widget {
         // Widget sürüklenince (Windows) ya da pencere yöneticisiyle taşınınca konumu hatırla.
         let bounds_subscription =
             cx.observe_window_bounds(window, |this, window, cx| this.window_moved(window, cx));
+        // Kapanırken işleyen tur ya da toplantı için "bitti" komutları çalışsın
+        // (ör. susturulan bildirimler yeniden açılsın).
+        let quit_subscription = cx.on_app_quit(|this, _| {
+            this.run_quit_hooks();
+            async {}
+        });
         // `pomodoro toggle` vb. komut satırı komutları.
         let command_task = cx.spawn(async move |this, cx| {
             while let Ok(command) = commands.recv().await {
@@ -216,6 +261,8 @@ impl Widget {
             meeting: None,
             meeting_settings: c.meeting_settings(),
             notifications: c.notifications.clone(),
+            hooks: c.hooks.clone(),
+            running: hooks::Activity::default(),
             activity: None,
             next_presence_poll: Instant::now(),
             camera_config: c.camera.clone(),
@@ -238,7 +285,7 @@ impl Widget {
             ticker: None,
             ring: SharedRingCache::default(),
             status,
-            _subscriptions: [subscription, bounds_subscription],
+            _subscriptions: [subscription, bounds_subscription, quit_subscription],
             _commands: command_task,
         };
         widget.publish_status();
@@ -251,6 +298,7 @@ impl Widget {
             Command::Toggle => self.toggle(cx),
             Command::Reset => {
                 self.pomodoro.reset();
+                self.run_hooks(Cause::Reset, None);
                 self.changed(cx);
             }
             Command::Skip => self.skip(cx),
@@ -302,6 +350,7 @@ impl Widget {
         self.pomodoro.set_settings(pomodoro_settings(config));
         self.meeting_settings = config.meeting_settings();
         self.notifications = config.notifications.clone();
+        self.hooks = config.hooks.clone();
         if config.camera != self.camera_config {
             // Kamera değiştiyse ya da kapatıldıysa, gerekiyorsa sonraki yoklamada yeniden açılır.
             self.camera_config = config.camera.clone();
@@ -403,7 +452,9 @@ impl Widget {
     }
 
     fn toggle(&mut self, cx: &mut Context<Self>) {
+        let fresh = self.pomodoro.timer().state() == TimerState::Idle;
         self.pomodoro.toggle(Instant::now());
+        self.run_hooks(Cause::Toggle { fresh }, None);
         self.changed(cx);
     }
 
@@ -416,11 +467,13 @@ impl Widget {
             Mode::Pomodoro => self.pomodoro.reset(),
             Mode::Meeting => self.end_meeting(),
         }
+        self.run_hooks(Cause::Reset, None);
         self.changed(cx);
     }
 
     fn skip(&mut self, cx: &mut Context<Self>) {
         self.pomodoro.skip(Instant::now());
+        self.run_hooks(Cause::Skip, None);
         self.changed(cx);
     }
 
@@ -431,6 +484,10 @@ impl Widget {
         });
         match result {
             Ok(meeting) => {
+                let mut env = meeting_env(&meeting);
+                let minutes = whole_minutes(meeting.remaining(SystemTime::now()));
+                env.push(("POMODORO_MINUTES", minutes.to_string()));
+                hooks::fire(&self.hooks, Event::MeetingStart, env);
                 self.meeting = Some(meeting);
                 self.input.clear();
                 self.input_error = None;
@@ -441,7 +498,11 @@ impl Widget {
     }
 
     fn end_meeting(&mut self) {
-        self.meeting = None;
+        if let Some(meeting) = self.meeting.take() {
+            let mut env = meeting_env(&meeting);
+            env.push(("POMODORO_REASON", "ended".into()));
+            hooks::fire(&self.hooks, Event::MeetingEnd, env);
+        }
         self.input.clear();
         self.input_error = None;
     }
@@ -598,6 +659,13 @@ impl Widget {
                         let now = Instant::now();
                         if let Some(event) = this.pomodoro.tick(now) {
                             let alert = this.phase_alert(event);
+                            let mut env = alert_env(&alert);
+                            env.push(("POMODORO_PHASE", phase_key(event.finished).into()));
+                            env.push(("POMODORO_NEXT", phase_key(event.next).into()));
+                            this.run_hooks(
+                                Cause::Finished,
+                                Some((Event::done(event.finished), env)),
+                            );
                             alert::fire(alert, &this.notifications);
                             // Mola başladıysa göz belirsin.
                             this.ensure_animation(cx);
@@ -605,6 +673,14 @@ impl Widget {
                         let wall = SystemTime::now();
                         if let Some(stage) = this.meeting.as_mut().and_then(|m| m.tick(wall)) {
                             let alert = this.meeting_alert(stage, wall);
+                            let event = match stage {
+                                Stage::Warning => Event::MeetingWarning,
+                                Stage::Critical => Event::MeetingCritical,
+                                Stage::Overtime | Stage::Normal => Event::MeetingOvertime,
+                            };
+                            let mut env = alert_env(&alert);
+                            env.extend(this.meeting.as_ref().map(meeting_env).unwrap_or_default());
+                            hooks::fire(&this.hooks, event, env);
                             alert::fire(alert, &this.notifications);
                         }
                         cx.notify();
@@ -625,15 +701,58 @@ impl Widget {
         }));
     }
 
+    // ---- Olay komutları ------------------------------------------------------
+
+    /// Pomodoro'nun işleyen evresi değiştiyse bitir/başla komutlarını
+    /// çalıştırır. `done` (süresi dolan turun komutu) ikisinin arasında çalışır.
+    fn run_hooks(&mut self, cause: Cause, done: Option<(Event, hooks::Env)>) {
+        let running = self.pomodoro.is_active().then(|| self.pomodoro.phase());
+        let (stopped, started) = self.running.update(running);
+        if let Some(phase) = stopped {
+            let reason = match cause {
+                Cause::Toggle { .. } => "paused",
+                Cause::Reset => "reset",
+                Cause::Skip => "skipped",
+                Cause::Finished => "finished",
+            };
+            hooks::fire(&self.hooks, Event::stop(phase), phase_env(phase, reason));
+        }
+        if let Some((event, env)) = done {
+            hooks::fire(&self.hooks, event, env);
+        }
+        if let Some(phase) = started {
+            let now = Instant::now();
+            let timer = self.pomodoro.timer();
+            let reason = match cause {
+                Cause::Finished => "auto",
+                Cause::Toggle { fresh: false } => "resumed",
+                _ => "started",
+            };
+            let mut env = phase_env(phase, reason);
+            env.push(("POMODORO_MINUTES", whole_minutes(timer.remaining(now)).to_string()));
+            hooks::fire(&self.hooks, Event::start(phase), env);
+        }
+    }
+
+    /// Uygulama kapanırken: işleyen tur ve toplantı "bitti" sayılır. Sıradaki
+    /// komutlar (kısa bir süre) beklenir, yoksa süreçle birlikte yarıda kalırlar.
+    fn run_quit_hooks(&mut self) {
+        if let (Some(phase), _) = self.running.update(None) {
+            hooks::fire(&self.hooks, Event::stop(phase), phase_env(phase, "quit"));
+        }
+        if let Some(meeting) = &self.meeting {
+            let mut env = meeting_env(meeting);
+            env.push(("POMODORO_REASON", "quit".into()));
+            hooks::fire(&self.hooks, Event::MeetingEnd, env);
+        }
+        hooks::flush(hooks::QUIT_TIMEOUT);
+    }
+
     // ---- Bildirim metinleri -------------------------------------------------
 
     fn phase_alert(&self, event: PhaseFinished) -> Alert {
         let started = self.pomodoro.timer().is_running();
-        let minutes = self.pomodoro.timer().remaining(Instant::now());
-        let minutes = match minutes {
-            Remaining::Left(d) => d.as_secs().div_ceil(60),
-            Remaining::Over(_) => 0,
-        };
+        let minutes = whole_minutes(self.pomodoro.timer().remaining(Instant::now()));
         let (title, next) = match event.next {
             Phase::ShortBreak => (t().work_done, t().short_break),
             Phase::LongBreak => (t().work_done, t().long_break),

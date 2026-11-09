@@ -7,6 +7,7 @@ use std::{fs, path::PathBuf, time::Duration};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    hooks::HooksConfig,
     i18n::Language,
     meeting::{MeetingDisplay, MeetingSettings},
     pomodoro::PomodoroSettings,
@@ -22,6 +23,8 @@ pub struct Config {
     pub meeting: MeetingConfig,
     pub notifications: NotificationConfig,
     pub appearance: AppearanceConfig,
+    /// Olaylarda çalışan kabuk komutları; yalnızca dosyadan düzenlenir.
+    pub hooks: HooksConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -331,6 +334,18 @@ mod tests {
         assert_eq!(config.meeting, MeetingConfig::default());
         assert_eq!(config.camera, CameraConfig::default());
         assert!(!config.camera.enabled, "kamera varsayılan olarak kapalı");
+        assert_eq!(config.hooks, HooksConfig::default());
+    }
+
+    #[test]
+    fn hooks_survive_a_save() {
+        // Ayarlar paneli dosyayı yeniden yazınca elle eklenen komutlar kaybolmasın.
+        let text = "[hooks]\nwork_start = \"dunstctl set-paused true\"\n";
+        let config: Config = toml::from_str(text).unwrap();
+        let saved = toml::to_string_pretty(&config).unwrap();
+        assert!(saved.contains("work_start = \"dunstctl set-paused true\""), "{saved}");
+        assert!(!saved.contains("work_stop"), "boş komutlar yazılmaz: {saved}");
+        assert_eq!(toml::from_str::<Config>(&saved).unwrap(), config);
     }
 
     #[test]
