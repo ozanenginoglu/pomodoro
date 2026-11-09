@@ -6,9 +6,12 @@
 
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
 use crate::timer::Countdown;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Phase {
     Work,
     ShortBreak,
@@ -76,6 +79,8 @@ pub enum Guard {
 pub struct PhaseFinished {
     pub finished: Phase,
     pub next: Phase,
+    /// Biten evrenin süresi.
+    pub length: Duration,
 }
 
 #[derive(Clone, Debug)]
@@ -213,13 +218,14 @@ impl Pomodoro {
             return None;
         }
         let finished = self.phase;
+        let length = self.timer.duration();
         let next = self.next_phase(true);
         let auto_start = match next {
             Phase::Work => self.settings.auto_start_work,
             _ => self.settings.auto_start_breaks,
         };
         self.enter(next, auto_start, now);
-        Some(PhaseFinished { finished, next })
+        Some(PhaseFinished { finished, next, length })
     }
 
     fn next_phase(&mut self, count_work: bool) -> Phase {
@@ -278,6 +284,16 @@ mod tests {
         }
         *now += p.timer().duration();
         p.tick(*now).expect("evre bitmeliydi")
+    }
+
+    #[test]
+    fn finished_event_reports_length() {
+        let mut p = Pomodoro::new(settings());
+        let mut now = Instant::now();
+        let event = finish(&mut p, &mut now);
+        assert_eq!((event.finished, event.length), (Phase::Work, settings().work));
+        let event = finish(&mut p, &mut now);
+        assert_eq!((event.finished, event.length), (Phase::ShortBreak, settings().short_break));
     }
 
     #[test]

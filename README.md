@@ -9,6 +9,7 @@ Runs on **Linux (X11 and Wayland)** and **Windows**. It's written in Rust with [
 | | |
 |---|---|
 | **Pomodoro** | Work, short break and long break rounds. The dots under the clock show where you are in the cycle. Breaks can start on their own when a work round ends. |
+| **Tomato garden** | While the timer is stopped, a little pot shows today's work: every finished round adds a tomato to the plant, and the plant grows through the day. |
 | **Break guard** | Optional. A break only counts down while you're away from the computer. While the camera sees you at the desk (or, without a camera, while you use the keyboard and mouse), it waits, and a little tomato on the widget glares at you until you step away. |
 | **Meeting** | Type a length (`45`, `1h30`) or an end time (`14:30`) and it counts down. The ring turns yellow, then orange as the end gets close, and red when the meeting runs over. |
 | **Alerts** | A desktop notification and a short bell chime at the end of each round and at each meeting stage. |
@@ -84,6 +85,12 @@ Switch to meeting mode, type how long the meeting is or when it ends, and press 
 | `14:30` or `14.30` | Ends at 14:30 (tomorrow, if that time has already passed today) |
 
 A meeting can be up to 12 hours long. Pomodoro keeps running in the background while you're in meeting mode, and the other way round.
+
+### Tomato garden
+
+While the Pomodoro timer is stopped (between rounds, or at the end of the day), the widget shows a flower pot above a smaller clock. Every work round you finish today hangs a red tomato on the plant; a round you skipped after it started stays a small green one. The plant grows with the day: a sprout in the morning, a full tomato plant after six rounds. The tomato from your latest round smiles at you. The plant holds 12 tomatoes; on longer days a small badge on top shows how many rounds you finished.
+
+The garden comes from the [history file](#history), so it survives a restart. At midnight it starts again from a sprout. While a round or break is counting, the widget shows the plain clock.
 
 ### Break guard
 
@@ -187,6 +194,19 @@ The command gets these environment variables (`%NAME%` in `cmd` on Windows):
 | `POMODORO_MEETING_END` | Meeting hooks: the end time, e.g. `14:30`. |
 
 Hooks run one at a time, in the order of the events, so a `work_stop` never overtakes the `work_start` before it. A hook that runs longer than 30 seconds is stopped; end a long-running command with `&` to keep it going in the background. When you quit the widget, it waits up to 2 seconds for pending hooks. A hook that fails is only logged (`RUST_LOG=pomodoro=info pomodoro` shows each hook as it runs).
+
+### History
+
+Every round that runs to the end or that you skip after it started is added as one line to a history file (the tomato garden reads today's work rounds from it):
+
+- Linux: `~/.local/share/pomodoro/history.jsonl`
+- Windows: `%APPDATA%\pomodoro\data\history.jsonl`
+
+```json
+{"end":"2026-11-09T14:30:00+03:00","phase":"work","outcome":"done","seconds":1500}
+```
+
+`phase` is `work`, `short_break` or `long_break`; `outcome` is `done` or `skipped`; `seconds` is how long the round ran. The file only grows. You can delete or trim it at any time.
 
 ## Platform notes
 

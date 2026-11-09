@@ -11,6 +11,7 @@ use gpui::{
 
 use super::{
     eye::{self, Eye, Mood, Pose, PoseKey, SharedEyeCache},
+    garden::{self, SharedGardenCache},
     ring::{RingStyle, SharedRingCache, ring},
     settings::{self, SettingsPanel},
     theme,
@@ -20,6 +21,7 @@ use crate::{
     assets::icon,
     camera,
     config::{AppearanceConfig, CameraConfig, Config, NotificationConfig, Position},
+    history::{self, Outcome},
     hooks::{self, Event, HooksConfig, phase_key},
     i18n::{self, t},
     ipc::{self, Command},
@@ -77,6 +79,9 @@ const CONTROLS_HEIGHT: f32 = 40.0;
 const EYE_WIDTH: f32 = eye::VIEW[0] * 0.9;
 const EYE_HEIGHT: f32 = eye::VIEW[1] * 0.9;
 const EYE_CLOCK_SIZE: f32 = 24.0;
+/// Domates bahçesinin (saksı ve bitki) alanı.
+const GARDEN_WIDTH: f32 = garden::VIEW[0] * 0.95;
+const GARDEN_HEIGHT: f32 = garden::VIEW[1] * 0.95;
 /// Toplantı girişine yazılabilecek en uzun metin.
 const INPUT_MAX: usize = 14;
 
@@ -160,6 +165,12 @@ pub struct Widget {
     /// En son çizilen domates pozu; değişmedikçe yeniden çizilmez.
     drawn_eye: Option<PoseKey>,
     eye_image: SharedEyeCache,
+    /// Bugünün çalışma turları (domates bahçesi) ve hangi güne ait oldukları.
+    garden: Vec<Outcome>,
+    garden_day: chrono::NaiveDate,
+    garden_image: SharedGardenCache,
+    /// Gece yarısı bahçeyi boşaltmak için yeniden çizer.
+    _midnight: Task<()>,
     /// Uygulanmış görünüm ayarları (konum değişikliğini fark etmek için).
     appearance: AppearanceConfig,
     /// Pencerenin açıldığı görünüm ayarları; Wayland'de konum ancak yeniden
@@ -252,6 +263,19 @@ impl Widget {
                 }
             }
         });
+        let today = chrono::Local::now().date_naive();
+        let midnight = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(until_midnight()).await;
+                let alive = this.update(cx, |this, cx| {
+                    this.roll_garden();
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        });
         let widget = Self {
             config,
             settings_window: None,
@@ -272,6 +296,10 @@ impl Widget {
             eye: None,
             drawn_eye: None,
             eye_image: SharedEyeCache::default(),
+            garden: history::work_rounds_on(today),
+            garden_day: today,
+            garden_image: SharedGardenCache::default(),
+            _midnight: midnight,
             appearance: c.appearance.clone(),
             launched: c.appearance.clone(),
             pending_restart: false,
@@ -472,7 +500,13 @@ impl Widget {
     }
 
     fn skip(&mut self, cx: &mut Context<Self>) {
-        self.pomodoro.skip(Instant::now());
+        let now = Instant::now();
+        // Hiç işlememiş bir evreyi atlamak geçmişe yazılmaz.
+        let elapsed = self.pomodoro.timer().elapsed(now);
+        if !elapsed.is_zero() {
+            self.record_round(self.pomodoro.phase(), Outcome::Skipped, elapsed);
+        }
+        self.pomodoro.skip(now);
         self.run_hooks(Cause::Skip, None);
         self.changed(cx);
     }
@@ -658,6 +692,7 @@ impl Widget {
                     .update(cx, |this, cx| {
                         let now = Instant::now();
                         if let Some(event) = this.pomodoro.tick(now) {
+                            this.record_round(event.finished, Outcome::Done, event.length);
                             let alert = this.phase_alert(event);
                             let mut env = alert_env(&alert);
                             env.push(("POMODORO_PHASE", phase_key(event.finished).into()));
@@ -699,6 +734,26 @@ impl Widget {
                 }
             }
         }));
+    }
+
+    // ---- Geçmiş ve bahçe -------------------------------------------------------
+
+    /// Turu geçmişe yazar; çalışma turuysa bahçeye ekler.
+    fn record_round(&mut self, phase: Phase, outcome: Outcome, counted: Duration) {
+        history::record(history::Entry::new(chrono::Local::now(), phase, outcome, counted));
+        if phase == Phase::Work {
+            self.roll_garden();
+            self.garden.push(outcome);
+        }
+    }
+
+    /// Gün değiştiyse bahçe o günün turlarıyla (genellikle boş) yeniden başlar.
+    fn roll_garden(&mut self) {
+        let today = chrono::Local::now().date_naive();
+        if today != self.garden_day {
+            self.garden_day = today;
+            self.garden = history::work_rounds_on(today);
+        }
     }
 
     // ---- Olay komutları ------------------------------------------------------
@@ -1049,6 +1104,50 @@ impl Widget {
                             .child(SharedString::from(remaining_text(timer.remaining(now)))),
                     )
             }
+            // Sayaç durmuşken: domates bahçesi ve altında küçük saat.
+            None if state == TimerState::Idle => {
+                let shrink = 1.0 - 0.3 * reveal;
+                let done = self.garden.iter().filter(|&&o| o == Outcome::Done).count();
+                // Bitkiye sığmayan günlerde tur sayısı, bitkinin tepesinde küçük
+                // bir etikette. Yerleşimi kaydırmasın diye alanın üstüne bindirilir.
+                let badge = (self.garden.len() > garden::MAX_TOMATOES).then(|| {
+                    div()
+                        .absolute()
+                        .top(px(-15.0 * k * shrink))
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .px(px(5.0 * k))
+                                .rounded_full()
+                                .bg(theme::tomato())
+                                .text_color(theme::surface())
+                                .text_size(px(10.0 * k))
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .child(SharedString::from(done.to_string())),
+                        )
+                });
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .child(
+                        div()
+                            .relative()
+                            .w(px(GARDEN_WIDTH * k * shrink))
+                            .h(px(GARDEN_HEIGHT * k * shrink))
+                            .child(garden::garden(self.garden_image.clone(), &self.garden))
+                            .children(badge),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(EYE_CLOCK_SIZE * k))
+                            .text_color(clock_color)
+                            .child(SharedString::from(remaining_text(timer.remaining(now)))),
+                    )
+            }
             None => clock(timer.remaining(now), reveal, k, clock_color),
         };
 
@@ -1214,6 +1313,17 @@ fn face_direction([x, y]: [f32; 2]) -> [f32; 2] {
     [(0.5 - x) * 2.0, (y - 0.5) * 1.6].map(|v| v.clamp(-1.0, 1.0))
 }
 
+/// Bir sonraki gece yarısına (yerel saat) kalan süre; hesaplanamazsa bir saat.
+fn until_midnight() -> Duration {
+    let now = chrono::Local::now();
+    now.date_naive()
+        .succ_opt()
+        .and_then(|day| day.and_hms_opt(0, 0, 1))
+        .and_then(|t| t.and_local_timezone(chrono::Local).earliest())
+        .and_then(|t| (t - now).to_std().ok())
+        .unwrap_or(Duration::from_secs(3600))
+}
+
 /// Gösterilen saniyenin değişmesine kalan süre (+ küçük bir pay).
 fn until_next_second(remaining: Remaining) -> Duration {
     const SLACK: Duration = Duration::from_millis(15);
@@ -1255,6 +1365,7 @@ impl Render for Widget {
         let reveal = self.controls.value();
         let k = self.scale;
         let eye = self.eye_pose(now);
+        self.roll_garden();
 
         let content = match (self.mode, &self.meeting) {
             (Mode::Pomodoro, _) => self.pomodoro_view(now, reveal, eye, cx),

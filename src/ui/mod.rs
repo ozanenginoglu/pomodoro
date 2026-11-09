@@ -1,4 +1,5 @@
 pub mod eye;
+pub mod garden;
 pub mod raster;
 pub mod ring;
 pub mod settings;

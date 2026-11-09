@@ -20,7 +20,7 @@ cargo test parses_durations                   # single test by name substring
 RUST_LOG=pomodoro=debug cargo run             # hover / command / restart logs; =trace adds pointer polling
 POMODORO_DEMO=1 cargo run                     # debug builds only: Pomodoro minutes become seconds
 POMODORO_SOCKET=test cargo run                # second instance next to the real one (separate IPC socket)
-XDG_CONFIG_HOME=/tmp/x cargo run              # throwaway config dir
+XDG_CONFIG_HOME=/tmp/x XDG_DATA_HOME=/tmp/x cargo run   # throwaway config dir and history file
 ```
 
 - There is no `rustfmt.toml`, and the committed code is in a compact hand-formatted style. Do **not** run `cargo fmt` over the tree; it rewrites untouched files. Format only the files you changed: `rustfmt --edition 2024 --config use_small_heuristics=Max <files>`. rustfmt follows `mod` declarations, so passing `main.rs` or a `mod.rs` also reformats every module below it; check `git status` afterwards and restore files you didn't touch.
@@ -28,7 +28,7 @@ XDG_CONFIG_HOME=/tmp/x cargo run              # throwaway config dir
 
 ### Testing GUI behavior without touching the user's session
 
-The user's X session (`:0`, xmonad) must not be disturbed: don't move the real mouse or open test windows there. Use nested, invisible compositors instead, and run the app with its own `POMODORO_SOCKET` and `XDG_CONFIG_HOME`:
+The user's X session (`:0`, xmonad) must not be disturbed: don't move the real mouse or open test windows there. Use nested, invisible compositors instead, and run the app with its own `POMODORO_SOCKET`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME`:
 
 - **Wayland / layer-shell:** headless weston, with niri nested inside it: `weston --backend=headless --fake-seat --renderer=gl --socket=wl-pomo --idle-time=0`, then `WAYLAND_DISPLAY=wl-pomo niri -c <cfg>`. Run the app with `env -u DISPLAY WAYLAND_DISPLAY=wayland-1`. `--idle-time=0` matters: otherwise weston blanks after 5 minutes and nested niri freezes. Screenshots: `niri msg action screenshot-screen --path …`. Pointer input: a small `zwlr_virtual_pointer_v1` client; keyboard: `wtype`. (`ydotool` would move the real cursor.) Hyprland doesn't run nested in weston; niri also provides XWayland on `:1` for XWayland tests.
 - **X11 / xmonad:** headless weston → rootful `Xwayland :5` → `Xephyr :6` (a plain X server without the XWAYLAND extension) → a minimal compiled xmonad config (`ghc -dynamic`, with `className =? "pomodoro" --> doFloat`), so the user's startup hooks don't run. Drive it with `xdotool` on `DISPLAY=:6`.
@@ -42,6 +42,7 @@ The user's X session (`:0`, xmonad) must not be disturbed: don't move the real m
 - `timer.rs`: `Countdown` (Idle / Running / Paused), computed from start time with `Instant` injected, so tests don't sleep. `format_clock` rounds seconds up.
 - `pomodoro.rs`: the work / short break / long break cycle on top of `Countdown`. `tick(now)` returns a `PhaseFinished` event; skipping a round doesn't count it.
 - `meeting.rs`: `parse` (durations in English/Turkish units, `HH:MM` or `HH.MM` always means a clock time, 12 h cap) → `resolve` → `Meeting` with `Stage` (Normal < Warning < Critical < Overtime). `tick` reports each stage once.
+- `history.rs`: appends finished/skipped rounds to `history.jsonl` in the data dir (one JSON line each, on a background thread). Rounds skipped before they ran aren't recorded.
 - `status.rs`: `StatusInfo` → xmobar / waybar JSON / plain text.
 - `config.rs`: serde + toml. `#[serde(default)]` everywhere, `normalized()` clamps to `limits`, atomic save, and a broken file is renamed to `.toml.broken`. `language` must stay the first field (TOML values must come before tables).
 - `i18n.rs`: the active language is a process-global `AtomicU8`, so code outside the UI (alerts, the IPC thread, the CLI) can use `t()`. A new string needs a field in `Strings` and a value in **both** `EN` and `TR`; strings with arguments are functions at the bottom.
@@ -49,6 +50,7 @@ The user's X session (`:0`, xmonad) must not be disturbed: don't move the real m
 **UI (`ui/`):**
 - `Entity<Config>` is the single source of truth. `settings.rs` changes it through `SettingsPanel::set` (clone → change → normalize → save → notify). `widget.rs` observes it in `apply_config` (pomodoro/meeting settings, notifications, size, position, language).
 - `widget.rs` holds the modes and the timers. The ticker task only wakes at the next displayed-second boundary and only while some timer runs. Hover controls fade with a 200 ms animation driven by the widget's own 16 ms timer task (X11 doesn't deliver animation frames to unfocused windows). Hover-in comes from the `on_mouse_move` circle test. Hover-out depends on the platform: X11 polls the pointer via `platform::pointer_position` (GPUI's leave events are unreliable under xmonad), XWayland requires both the poll and `is_window_hovered` (the X pointer goes stale over native surfaces), and Wayland/Windows rely on `is_window_hovered`. `window_moved` saves a user-dragged position as `Position::Custom` (debounced; `moved_by_user` ignores WM nudges of a few pixels). `publish_status` writes the shared `ipc::Status` for `pomodoro status`.
+- `garden.rs`: the tomato garden (pot + plant growing with today's work rounds), shown instead of the big clock while the Pomodoro timer is idle. Drawn with tiny-skia in a fixed design space (`VIEW`), cached by (pixels, rounds). `widget.rs` loads today's rounds from `history::work_rounds_on`, appends in `record_round` and resets at local midnight (`_midnight` task + `roll_garden` in render). Shared drawing helpers (`Painter`, `oval`, `rounded_rect`, …) live in `raster.rs`.
 - `ring.rs`: the disc, track and progress arc are rasterized with tiny-skia at physical pixels and painted as a cached image, because GPUI paths aren't antialiased. It's drawn into the centered square of the bounds, so a non-square (e.g. tiled) window still shows a circle.
 
 **Platform (`platform/`):** `mod.rs` holds shared window options, `widget_bounds` (position presets, custom position clamped to its display) and `moved_by_user`. `linux.rs` and `windows.rs` must export the same set: `open_widget`, `open_settings`, `apply_appearance` → `Applied`, `remembers_position`, `DRAG_TO_MOVE`, `is_xwayland`, `pointer_position`, `autostart`, `set_autostart`.

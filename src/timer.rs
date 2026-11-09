@@ -39,7 +39,6 @@ impl Countdown {
         Self { duration, state: State::Idle }
     }
 
-    #[cfg(test)]
     pub fn duration(&self) -> Duration {
         self.duration
     }

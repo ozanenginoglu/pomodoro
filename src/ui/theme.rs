@@ -58,6 +58,38 @@ pub fn blush() -> Hsla {
     rgb(0xff79c6).into()
 }
 
+// Domates bahçesi: saksı, bitki ve ham (atlanmış turun) domatesi.
+pub fn tomato_shade() -> Hsla {
+    rgb(0xe35656).into()
+}
+pub fn leaf_dark() -> Hsla {
+    rgb(0x2fa652).into()
+}
+pub fn stem() -> Hsla {
+    rgb(0x4ea35e).into()
+}
+pub fn unripe() -> Hsla {
+    rgb(0x9be07a).into()
+}
+pub fn unripe_shade() -> Hsla {
+    rgb(0x76c25a).into()
+}
+pub fn pot() -> Hsla {
+    rgb(0xd9805f).into()
+}
+pub fn pot_light() -> Hsla {
+    rgb(0xe8977a).into()
+}
+pub fn pot_dark() -> Hsla {
+    rgb(0xb4654a).into()
+}
+pub fn pot_deep() -> Hsla {
+    rgb(0x8f4d39).into()
+}
+pub fn soil() -> Hsla {
+    rgb(0x4a3530).into()
+}
+
 pub fn error() -> Hsla {
     rgb(0xff5555).into()
 }

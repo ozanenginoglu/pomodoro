@@ -6,6 +6,7 @@ mod alert;
 mod assets;
 mod camera;
 mod config;
+mod history;
 mod hooks;
 mod i18n;
 mod ipc;

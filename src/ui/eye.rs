@@ -13,10 +13,10 @@
 use std::{cell::RefCell, f32::consts::PI, rc::Rc, sync::Arc, time::Duration, time::Instant};
 
 use gpui::{Bounds, Corners, Hsla, IntoElement, RenderImage, Styled, canvas, size};
-use tiny_skia::{FillRule, LineCap, LineJoin, Path, PathBuilder, Pixmap, Rect, Stroke, Transform};
+use tiny_skia::{PathBuilder, Pixmap, Transform};
 
 use super::{
-    raster::{ImageCache, paint, to_image},
+    raster::{ImageCache, Painter, oval, polyline, rounded_rect, to_image},
     theme,
 };
 
@@ -238,51 +238,6 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
-fn oval(cx: f32, cy: f32, rx: f32, ry: f32) -> Option<Path> {
-    PathBuilder::from_oval(Rect::from_ltrb(cx - rx, cy - ry, cx + rx, cy + ry)?)
-}
-
-fn polyline(points: &[(f32, f32)]) -> Option<Path> {
-    let mut builder = PathBuilder::new();
-    let (&(x, y), rest) = points.split_first()?;
-    builder.move_to(x, y);
-    for &(x, y) in rest {
-        builder.line_to(x, y);
-    }
-    builder.finish()
-}
-
-/// Tasarım alanı koordinatlarında çizen küçük yardımcı.
-struct Painter {
-    pixmap: Pixmap,
-    transform: Transform,
-}
-
-impl Painter {
-    fn fill(&mut self, path: Option<Path>, color: Hsla, alpha: f32) {
-        if let Some(path) = path
-            && alpha > 0.0
-        {
-            let paint = paint(color, alpha);
-            self.pixmap.fill_path(&path, &paint, FillRule::Winding, self.transform, None);
-        }
-    }
-
-    fn stroke(&mut self, path: Option<Path>, color: Hsla, alpha: f32, width: f32) {
-        if let Some(path) = path
-            && alpha > 0.0
-        {
-            let stroke = Stroke {
-                width,
-                line_cap: LineCap::Round,
-                line_join: LineJoin::Round,
-                ..Stroke::default()
-            };
-            self.pixmap.stroke_path(&path, &paint(color, alpha), &stroke, self.transform, None);
-        }
-    }
-}
-
 fn rasterize(pixels: [u32; 2], pose: Pose) -> Option<Arc<RenderImage>> {
     let [w, h] = pixels;
     let (wf, hf) = (w as f32, h as f32);
@@ -375,21 +330,6 @@ fn draw(p: &mut Painter, pose: Pose) {
             }
         }
     }
-}
-
-fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
-    let mut b = PathBuilder::new();
-    b.move_to(x + r, y);
-    b.line_to(x + w - r, y);
-    b.quad_to(x + w, y, x + w, y + r);
-    b.line_to(x + w, y + h - r);
-    b.quad_to(x + w, y + h, x + w - r, y + h);
-    b.line_to(x + r, y + h);
-    b.quad_to(x, y + h, x, y + h - r);
-    b.line_to(x, y + r);
-    b.quad_to(x, y, x + r, y);
-    b.close();
-    b.finish()
 }
 
 #[cfg(test)]
