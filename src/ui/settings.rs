@@ -540,9 +540,9 @@ impl Render for SettingsPanel {
                         "size",
                         t().size,
                         &[
-                            (Size::Small, Text("S")),
-                            (Size::Medium, Text("M")),
-                            (Size::Large, Text("L")),
+                            (Size::Small, Text(t().size_small)),
+                            (Size::Medium, Text(t().size_medium)),
+                            (Size::Large, Text(t().size_large)),
                         ],
                         c.appearance.size,
                         |c, v| c.appearance.size = v,
