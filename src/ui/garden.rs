@@ -1,10 +1,11 @@
-//! Domates bahçesi: sayaç durmuşken dairede bir saksı belirir. Bugün biten
-//! her çalışma turu bitkiye bir domates ekler, atlanan turlar ham (yeşil)
-//! kalır. Bitki de turlarla büyür: tur yokken filiz, akşama dallı bir bitki.
-//! En son biten domatesin yüzü vardır.
+//! Domates bahçesi: sayaç durmuşken ve molalarda dairede bir saksı belirir.
+//! Bugün biten her çalışma turu bitkiye bir domates ekler, atlanan turlar ham
+//! (yeşil) kalır. Bitki de turlarla büyür: tur yokken filiz, akşama dallı bir
+//! bitki. En son biten domatesin yüzü vardır. Yeni eklenen domates dalında
+//! küçük bir sıçramayla büyür (`grow`).
 //!
 //! Çizim, domates ve halka gibi `tiny-skia` ile gerçek piksel çözünürlüğünde
-//! yapılır ve turlar değişmedikçe yeniden çizilmez.
+//! yapılır ve turlar (ya da büyüme) değişmedikçe yeniden çizilmez.
 
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -62,10 +63,20 @@ pub type SharedGardenCache = Rc<RefCell<GardenCache>>;
 struct Key {
     pixels: [u32; 2],
     rounds: Vec<Outcome>,
+    grow: i32,
 }
 
-/// Bahçeyi bulunduğu alana çizer.
-pub fn garden(cache: SharedGardenCache, rounds: &[Outcome]) -> impl IntoElement {
+/// Yeni domatesin büyüme eğrisi (`t ∈ [0, 1]`): hızla büyür, biraz taşar ve
+/// yerine oturur (ease-out-back).
+pub fn grow_curve(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0) - 1.0;
+    let c1 = 1.70158;
+    1.0 + (c1 + 1.0) * t * t * t + c1 * t * t
+}
+
+/// Bahçeyi bulunduğu alana çizer. `grow`, en son eklenen domatesin
+/// büyüklüğü (`grow_curve`); 1 tam boy.
+pub fn garden(cache: SharedGardenCache, rounds: &[Outcome], grow: f32) -> impl IntoElement {
     let rounds = rounds.to_vec();
     canvas(
         |_, _, _| {},
@@ -78,8 +89,8 @@ pub fn garden(cache: SharedGardenCache, rounds: &[Outcome]) -> impl IntoElement 
             if pixels.contains(&0) {
                 return;
             }
-            let key = Key { pixels, rounds: rounds.clone() };
-            let image = cache.borrow_mut().0.get(window, key, || rasterize(pixels, &rounds));
+            let key = Key { pixels, rounds: rounds.clone(), grow: (grow * 200.0).round() as i32 };
+            let image = cache.borrow_mut().0.get(window, key, || rasterize(pixels, &rounds, grow));
             if let Some(image) = image {
                 let bounds = Bounds::new(bounds.origin, bounds.size);
                 let _ = window.paint_image(bounds, bounds, Corners::default(), image, 0, false);
@@ -101,17 +112,17 @@ fn transform_for([w, h]: [f32; 2]) -> Transform {
     )
 }
 
-fn rasterize(pixels: [u32; 2], rounds: &[Outcome]) -> Option<Arc<RenderImage>> {
+fn rasterize(pixels: [u32; 2], rounds: &[Outcome], grow: f32) -> Option<Arc<RenderImage>> {
     let [w, h] = pixels;
     let transform = transform_for([w as f32, h as f32]);
     let mut p = Painter { pixmap: Pixmap::new(w, h)?, transform };
-    draw(&mut p, rounds);
+    draw(&mut p, rounds, grow);
     to_image(p.pixmap)
 }
 
-fn draw(p: &mut Painter, rounds: &[Outcome]) {
+fn draw(p: &mut Painter, rounds: &[Outcome], grow: f32) {
     pot(p);
-    plant(p, rounds);
+    plant(p, rounds, grow);
 }
 
 fn skia_color(color: Hsla) -> Color {
@@ -189,7 +200,7 @@ fn leaf(p: &mut Painter, x: f32, y: f32, len: f32, angle: f32, color: Hsla) {
     p.fill(b.finish().and_then(|path| path.transform(place)), color, 1.0);
 }
 
-fn plant(p: &mut Painter, rounds: &[Outcome]) {
+fn plant(p: &mut Painter, rounds: &[Outcome], grow: f32) {
     let stage = stage(rounds.len());
     let top = [98.0, 80.0, 62.0, 46.0][stage];
     let mid = (111.0 + top) / 2.0;
@@ -238,9 +249,16 @@ fn plant(p: &mut Painter, rounds: &[Outcome]) {
 
     let shown = &rounds[..rounds.len().min(MAX_TOMATOES)];
     let last_done = shown.iter().rposition(|&o| o == Outcome::Done);
+    // Bitkiye sığmayan günlerde yeni tur yalnızca etiketteki sayıyı artırır.
+    let growing = rounds.len().checked_sub(1).filter(|&i| i < MAX_TOMATOES);
     for (i, (&outcome, &(x, y))) in shown.iter().zip(&SPOTS).enumerate() {
         let ripe = outcome == Outcome::Done;
-        tomato(p, x, y, if ripe { 6.2 } else { 4.6 }, ripe, Some(i) == last_done);
+        let size = if Some(i) == growing { grow } else { 1.0 };
+        if size <= 0.01 {
+            continue;
+        }
+        let r = if ripe { 6.2 } else { 4.6 } * size;
+        tomato(p, x, y, r, ripe, Some(i) == last_done);
     }
 }
 
@@ -307,8 +325,8 @@ mod tests {
     fn rasterizes_every_stage() {
         for n in [0, 1, 3, 6, 12, 30] {
             let rounds = day(n, &[2]);
-            assert!(rasterize([61, 105], &rounds).is_some(), "{n}");
-            assert!(rasterize([122, 209], &rounds).is_some(), "{n}");
+            assert!(rasterize([61, 105], &rounds, 1.0).is_some(), "{n}");
+            assert!(rasterize([122, 209], &rounds, 0.5).is_some(), "{n}");
         }
     }
 
@@ -320,7 +338,7 @@ mod tests {
         for n in [0, 2, 5, 12] {
             let transform = transform_for([w as f32, h as f32]);
             let mut p = Painter { pixmap: Pixmap::new(w, h).unwrap(), transform };
-            draw(&mut p, &day(n, &[1]));
+            draw(&mut p, &day(n, &[1]), 1.0);
             let alpha = |x: u32, y: u32| p.pixmap.pixel(x, y).unwrap().alpha();
             for x in 0..w {
                 assert_eq!(alpha(x, 0), 0, "üst kenar, {n} tur");
@@ -339,12 +357,31 @@ mod tests {
         let red = |rounds: &[Outcome]| {
             let transform = transform_for([128.0, 220.0]);
             let mut p = Painter { pixmap: Pixmap::new(128, 220).unwrap(), transform };
-            draw(&mut p, rounds);
+            draw(&mut p, rounds, 1.0);
             p.pixmap.pixels().iter().filter(|c| c.red() > 200 && c.green() < 120).count()
         };
         let one = red(&day(1, &[]));
         let three = red(&day(3, &[]));
         assert!(red(&[]) < one && one < three, "{one} {three}");
         assert!(red(&day(3, &[2])) < three, "atlanan tur ham kalır");
+    }
+
+    #[test]
+    fn new_tomato_grows_and_settles() {
+        assert_eq!(grow_curve(0.0), 0.0);
+        assert!((grow_curve(1.0) - 1.0).abs() < 1e-6);
+        // Sonlara doğru biraz taşar, sonra yerine oturur.
+        assert!(grow_curve(0.7) > 1.0);
+    }
+
+    #[test]
+    fn growing_tomato_starts_small() {
+        let red = |grow: f32| {
+            let transform = transform_for([128.0, 220.0]);
+            let mut p = Painter { pixmap: Pixmap::new(128, 220).unwrap(), transform };
+            draw(&mut p, &day(3, &[]), grow);
+            p.pixmap.pixels().iter().filter(|c| c.red() > 200 && c.green() < 120).count()
+        };
+        assert!(red(0.0) < red(0.5) && red(0.5) < red(1.0));
     }
 }

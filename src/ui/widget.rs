@@ -82,6 +82,10 @@ const EYE_CLOCK_SIZE: f32 = 24.0;
 /// Domates bahçesinin (saksı ve bitki) alanı.
 const GARDEN_WIDTH: f32 = garden::VIEW[0] * 0.95;
 const GARDEN_HEIGHT: f32 = garden::VIEW[1] * 0.95;
+/// Yeni domatesin dalında büyüme süresi.
+const GROW: Duration = Duration::from_millis(700);
+/// Çalışma turu bitince bahçe, mola bekçisi domatesten önce bu kadar görünür.
+const SHOW_GARDEN: Duration = Duration::from_secs(5);
 /// Toplantı girişine yazılabilecek en uzun metin.
 const INPUT_MAX: usize = 14;
 
@@ -169,6 +173,8 @@ pub struct Widget {
     garden: Vec<Outcome>,
     garden_day: chrono::NaiveDate,
     garden_image: SharedGardenCache,
+    /// Bahçeye son domatesin eklendiği an (büyüme animasyonu ve kısa gösterim).
+    garden_grew: Option<Instant>,
     /// Gece yarısı bahçeyi boşaltmak için yeniden çizer.
     _midnight: Task<()>,
     /// Uygulanmış görünüm ayarları (konum değişikliğini fark etmek için).
@@ -299,6 +305,7 @@ impl Widget {
             garden: history::work_rounds_on(today),
             garden_day: today,
             garden_image: SharedGardenCache::default(),
+            garden_grew: None,
             _midnight: midnight,
             appearance: c.appearance.clone(),
             launched: c.appearance.clone(),
@@ -744,7 +751,27 @@ impl Widget {
         if phase == Phase::Work {
             self.roll_garden();
             self.garden.push(outcome);
+            self.garden_grew = Some(Instant::now());
         }
+    }
+
+    /// Yeni domates hâlâ büyüyor mu? Bir kare fazlası, son karenin tam boyda
+    /// çizilmesi için.
+    fn garden_growing(&self, now: Instant) -> bool {
+        self.garden_grew.is_some_and(|t| now.duration_since(t) < GROW + EYE_FRAME)
+    }
+
+    /// En son eklenen domatesin büyüklüğü; 1 tam boy.
+    fn garden_growth(&self, now: Instant) -> f32 {
+        match self.garden_grew {
+            Some(t) => garden::grow_curve(now.duration_since(t).as_secs_f32() / GROW.as_secs_f32()),
+            None => 1.0,
+        }
+    }
+
+    /// Bir çalışma turu az önce bitti: bahçe mola bekçisinin yerine de görünür.
+    fn showing_garden(&self, now: Instant) -> bool {
+        self.garden_grew.is_some_and(|t| now.duration_since(t) < SHOW_GARDEN)
     }
 
     /// Gün değiştiyse bahçe o günün turlarıyla (genellikle boş) yeniden başlar.
@@ -868,7 +895,7 @@ impl Widget {
     }
 
     fn is_animating(&self) -> bool {
-        self.controls.is_animating() || self.guarding()
+        self.controls.is_animating() || self.guarding() || self.garden_growing(Instant::now())
     }
 
     /// X11'de pencere odakta değilken ve fare hareket etmezken animasyon
@@ -895,8 +922,10 @@ impl Widget {
                     .update(cx, |_, window, cx| {
                         this.update(cx, |this, cx| {
                             this.poll_presence(cx);
-                            let eye_moved = this.step_eye(Instant::now(), window);
-                            if eye_moved || this.controls.is_animating() {
+                            let now = Instant::now();
+                            let eye_moved = this.step_eye(now, window);
+                            if eye_moved || this.controls.is_animating() || this.garden_growing(now)
+                            {
                                 cx.notify();
                             }
                             let animating = this.is_animating();
@@ -969,7 +998,9 @@ impl Widget {
     /// Gözü bir kare ilerletir. Kullanıcı bilgisayar başındayken imleci izler.
     /// Görünüşü çizilenden farklıysa `true`.
     fn step_eye(&mut self, now: Instant, window: &Window) -> bool {
-        if !self.shows_eye() {
+        // Tur yeni bittiyse önce bahçe görünür; domates ondan sonra baştan başlar
+        // (bahçenin arkasında sinirlenmiş olarak gelmesin).
+        if !self.shows_eye() || self.showing_garden(now) {
             self.eye = None;
             return self.drawn_eye.is_some();
         }
@@ -1104,8 +1135,8 @@ impl Widget {
                             .child(SharedString::from(remaining_text(timer.remaining(now)))),
                     )
             }
-            // Sayaç durmuşken: domates bahçesi ve altında küçük saat.
-            None if state == TimerState::Idle => {
+            // Sayaç durmuşken ve molalarda: domates bahçesi ve altında küçük saat.
+            None if state == TimerState::Idle || self.pomodoro.phase() != Phase::Work => {
                 let shrink = 1.0 - 0.3 * reveal;
                 let done = self.garden.iter().filter(|&&o| o == Outcome::Done).count();
                 // Bitkiye sığmayan günlerde tur sayısı, bitkinin tepesinde küçük
@@ -1138,7 +1169,11 @@ impl Widget {
                             .relative()
                             .w(px(GARDEN_WIDTH * k * shrink))
                             .h(px(GARDEN_HEIGHT * k * shrink))
-                            .child(garden::garden(self.garden_image.clone(), &self.garden))
+                            .child(garden::garden(
+                                self.garden_image.clone(),
+                                &self.garden,
+                                self.garden_growth(now),
+                            ))
                             .children(badge),
                     )
                     .child(
@@ -1364,7 +1399,8 @@ impl Render for Widget {
         let now = Instant::now();
         let reveal = self.controls.value();
         let k = self.scale;
-        let eye = self.eye_pose(now);
+        // Tur yeni bittiyse bekçi domates biraz bekler, önce bahçe görünür.
+        let eye = if self.showing_garden(now) { None } else { self.eye_pose(now) };
         self.roll_garden();
 
         let content = match (self.mode, &self.meeting) {

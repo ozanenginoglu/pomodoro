@@ -9,7 +9,7 @@ Runs on **Linux (X11 and Wayland)** and **Windows**. It's written in Rust with [
 | | |
 |---|---|
 | **Pomodoro** | Work, short break and long break rounds. The dots under the clock show where you are in the cycle. Breaks can start on their own when a work round ends. |
-| **Tomato garden** | While the timer is stopped, a little pot shows today's work: every finished round adds a tomato to the plant, and the plant grows through the day. |
+| **Tomato garden** | During breaks and while the timer is stopped, a little pot shows today's work: every finished round grows a new tomato on the plant, and the plant grows through the day. |
 | **Break guard** | Optional. A break only counts down while you're away from the computer. While the camera sees you at the desk (or, without a camera, while you use the keyboard and mouse), it waits, and a little tomato on the widget glares at you until you step away. |
 | **Meeting** | Type a length (`45`, `1h30`) or an end time (`14:30`) and it counts down. The ring turns yellow, then orange as the end gets close, and red when the meeting runs over. |
 | **Alerts** | A desktop notification and a short bell chime at the end of each round and at each meeting stage. |
@@ -88,9 +88,11 @@ A meeting can be up to 12 hours long. Pomodoro keeps running in the background w
 
 ### Tomato garden
 
-While the Pomodoro timer is stopped (between rounds, or at the end of the day), the widget shows a flower pot above a smaller clock. Every work round you finish today hangs a red tomato on the plant; a round you skipped after it started stays a small green one. The plant grows with the day: a sprout in the morning, a full tomato plant after six rounds. The tomato from your latest round smiles at you. The plant holds 12 tomatoes; on longer days a small badge on top shows how many rounds you finished.
+During breaks and while the Pomodoro timer is stopped (between rounds, or at the end of the day), the widget shows a flower pot above a smaller clock. Every work round you finish today grows a red tomato on the plant, with a little pop when the round ends; a round you skipped after it started stays a small green one. The plant grows with the day: a sprout in the morning, a full tomato plant after six rounds. The tomato from your latest round smiles at you. The plant holds 12 tomatoes; on longer days a small badge on top shows how many rounds you finished.
 
-The garden comes from the [history file](#history), so it survives a restart. At midnight it starts again from a sprout. While a round or break is counting, the widget shows the plain clock.
+![Four idle widgets, each with a flower pot above the clock: a sprout before the first round; a small plant with two red tomatoes; a taller plant after five rounds, four red tomatoes and one small green one for a skipped round; and a full plant with 12 tomatoes and a badge reading 14](docs/garden.png)
+
+The garden comes from the [history file](#history), so it survives a restart. At midnight it starts again from a sprout. While a work round is counting, the widget shows the plain clock, so nothing moves while you focus. With the [break guard](#break-guard) on, the garden shows for a few seconds after each work round before the guard's tomato takes over.
 
 ### Break guard
 
